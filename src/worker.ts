@@ -126,7 +126,20 @@ const webhookWorker = new Worker("webhooks", async job => {
         });
       }
       const reply = deterministic ?? await answerScheduleQuestion(person.id, String(text));
-      const action = await db.plannedAction.create({ data: { type: "AGENT_REPLY", personId: person.id, channel: "SMS", scheduledFor: new Date(), status: "PLANNED", reason: intent === "NATURAL_LANGUAGE" ? "Scheduling agent reply" : "Deterministic compliance/confirmation reply", messagePreview: reply, idempotencyKey: `reply:quo:${event.providerEventId}` } });
+      const action = await db.plannedAction.upsert({
+        where: { idempotencyKey: `reply:quo:${event.providerEventId}` },
+        update: {},
+        create: {
+          type: "AGENT_REPLY",
+          personId: person.id,
+          channel: "SMS",
+          scheduledFor: new Date(),
+          status: "PLANNED",
+          reason: intent === "NATURAL_LANGUAGE" ? "Scheduling agent reply" : "Deterministic compliance/confirmation reply",
+          messagePreview: reply,
+          idempotencyKey: `reply:quo:${event.providerEventId}`,
+        },
+      });
       await sendPlannedAction(action.id);
     } else if (event.provider === "QUO") {
       const data = payload.data?.object ?? payload.data ?? payload;
