@@ -1,9 +1,11 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 const db = new PrismaClient();
-const initialEmail = "Please confirm your {{role}} assignment for {{eventDate}}";
-const initialSms = "Hi {{firstName}}, this is Authentic Moments. Please confirm your {{role}} assignment for {{eventName}} on {{eventDate}} at {{venueName}}. Reply CONFIRM or use this secure link: {{confirmationUrl}}";
-const reminderSms = "Authentic Moments reminder: We still need confirmation for your {{role}} assignment on {{eventDate}}. Reply CONFIRM or use: {{confirmationUrl}}";
+const fourWeekEmail = "Hi {{firstName}},\n\nThis is your 4-week reminder for {{eventName}}.\n\nDate: {{eventDate}}\nLocation: {{eventLocation}}\nRole: {{role}}\n\nPlease confirm your assignment using the secure button below:\n{{confirmationUrl}}";
+const twoWeekEmail = "Hi {{firstName}},\n\nReminder: we still need your confirmation for {{eventName}}.\n\nDate: {{eventDate}}\nLocation: {{eventLocation}}\nRole: {{role}}\n\nPlease confirm now using the secure button below:\n{{confirmationUrl}}";
+const oneWeekSms = "Authentic Moments: Your event is one week away. {{eventName}} is on {{eventDate}} at {{eventLocation}}. We still need your confirmation: {{confirmationUrl}}";
+const threeDayEmail = "Hi {{firstName}},\n\nURGENT: {{eventName}} is only 3 days away and we still need your confirmation.\n\nDate: {{eventDate}}\nLocation: {{eventLocation}}\nRole: {{role}}\n\nPlease confirm immediately:\n{{confirmationUrl}}";
+const oneDaySms = "FINAL REMINDER from Authentic Moments: {{eventName}} is tomorrow, {{eventDate}}, at {{eventLocation}}. Please confirm now: {{confirmationUrl}}";
 async function main() {
   const configuredPassword = process.env.ADMIN_PASSWORD_B64
     ? Buffer.from(process.env.ADMIN_PASSWORD_B64, "base64").toString("utf8")
@@ -28,12 +30,28 @@ async function main() {
     },
   });
   const policies = [
-    ["Initial email",43200,"EMAIL",1,initialEmail,"Please confirm your {{role}} assignment for {{eventDate}}",false],
-    ["Initial SMS",43200,"SMS",1,initialSms,null,false],["14-day reminder",20160,"EMAIL",2,initialEmail,"Reminder: Please confirm your {{eventDate}} assignment",false],
-    ["7-day reminder",10080,"SMS",3,reminderSms,null,false],["3-day reminder",4320,"EMAIL",4,initialEmail,"Reminder: Please confirm your {{eventDate}} assignment",false],
-    ["1-day reminder",1440,"SMS",5,reminderSms,null,false],["Administrator escalation",720,"SYSTEM",6,"Assignment remains unconfirmed.",null,true],
+    ["4-week confirmation email",40320,"EMAIL",1,fourWeekEmail,"Please confirm your {{role}} assignment for {{eventDate}} at {{eventLocation}}",false],
+    ["14-day email reminder",20160,"EMAIL",2,twoWeekEmail,"Reminder: confirmation needed for {{eventDate}} at {{eventLocation}}",false],
+    ["7-day text reminder",10080,"SMS",3,oneWeekSms,null,false],
+    ["3-day urgent email",4320,"EMAIL",4,threeDayEmail,"URGENT: Please confirm your {{eventDate}} assignment",false],
+    ["1-day final text",1440,"SMS",5,oneDaySms,null,false],
   ] as const;
-  for (const [name,offset,channel,attempt,message,subject,escalate] of policies) await db.reminderPolicy.upsert({ where: { name }, update: {}, create: { name, offsetMinutes: offset, channel, attemptNumber: attempt, messageTemplate: message, subjectTemplate: subject, escalate } });
+  await db.reminderPolicy.updateMany({
+    where: { name: { notIn: policies.map(([name]) => name) } },
+    data: { active: false },
+  });
+  await db.plannedAction.updateMany({
+    where: {
+      reason: { notIn: policies.map(([name]) => name) },
+      status: { in: ["PLANNED", "QUEUED", "WAITING_FOR_APPROVAL"] },
+    },
+    data: { status: "CANCELED", canceledAt: new Date() },
+  });
+  for (const [name,offset,channel,attempt,message,subject,escalate] of policies) await db.reminderPolicy.upsert({
+    where: { name },
+    update: { active: true, offsetMinutes: offset, channel, attemptNumber: attempt, messageTemplate: message, subjectTemplate: subject, escalate },
+    create: { name, offsetMinutes: offset, channel, attemptNumber: attempt, messageTemplate: message, subjectTemplate: subject, escalate },
+  });
   await db.setting.upsert({ where: { key: "integration:vsco:warning" }, update: {}, create: { key: "integration:vsco:warning", value: "VSCO team assignments must be confirmed against the authenticated V2 API response. Manual assignments remain available." } });
   if (process.env.DEMO_SEED !== "true") return;
   const people = await Promise.all([

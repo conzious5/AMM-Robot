@@ -30,7 +30,7 @@ export async function sendPlannedAction(actionId: string) {
       const result = await new Resend(config.RESEND_API_KEY).emails.send({
         from: config.EMAIL_FROM, to: recipient, replyTo: config.EMAIL_REPLY_DOMAIN ? `reply+${conversation.id}@${config.EMAIL_REPLY_DOMAIN}` : undefined,
         subject: `${prefix}${action.subjectPreview ?? "Please confirm your assignment"}`, text: `${prefix}${body}`,
-        html: `<main style="font-family:Arial;max-width:600px;margin:auto"><p>${escapeHtml(prefix + body).replaceAll("\n", "<br>")}</p>${url ? `<p><a href="${url}" style="background:#1f4438;color:white;padding:12px 20px;text-decoration:none">Review Assignment</a></p>` : ""}</main>`,
+        html: `<main style="font-family:Arial;max-width:600px;margin:auto"><p>${escapeHtml(prefix + body).replaceAll("\n", "<br>")}</p>${url ? `<p><a href="${url}" style="background:#1f4438;color:white;padding:12px 20px;text-decoration:none;border-radius:4px;display:inline-block">Confirm Assignment</a></p>` : ""}</main>`,
         headers: { "Idempotency-Key": action.idempotencyKey },
       });
       if (result.error || !result.data) throw new Error(result.error?.message ?? "Resend rejected message");
@@ -40,7 +40,7 @@ export async function sendPlannedAction(actionId: string) {
       recipient = config.TEST_MODE ? config.TEST_SMS_RECIPIENT ?? "" : person.phone;
       if (!recipient) throw new Error("Test SMS recipient is not configured");
       const prefix = config.TEST_MODE ? `[TEST for ${person.phone}] ` : "";
-      const response = await fetch(`${config.QUO_API_BASE_URL}/messages`, { method: "POST", headers: { Authorization: config.QUO_API_KEY ?? "", "Content-Type": "application/json", "Idempotency-Key": action.idempotencyKey }, body: JSON.stringify({ from: config.QUO_PHONE_NUMBER, to: recipient, content: prefix + body }) });
+      const response = await fetch(`${config.QUO_API_BASE_URL}/messages`, { method: "POST", headers: { Authorization: config.QUO_API_KEY ?? "", "Content-Type": "application/json", "Idempotency-Key": action.idempotencyKey }, body: JSON.stringify({ from: config.QUO_PHONE_NUMBER, to: [recipient], content: prefix + body }) });
       if (!response.ok) throw new Error(`Quo rejected message (${response.status})`);
       const result = await response.json() as { data?: { id?: string }; id?: string };
       providerId = result.data?.id ?? result.id ?? "";
@@ -50,4 +50,55 @@ export async function sendPlannedAction(actionId: string) {
     return tx.plannedAction.update({ where: { id: action.id }, data: { status: "COMPLETED", completedAt: new Date(), attemptCount: { increment: 1 } } });
   });
 }
+
+export async function sendReminderPreview() {
+  const config = env();
+  const event = await db.event.findFirst({
+    where: { startsAt: { gt: new Date() }, canceled: false, status: "SCHEDULED" },
+    orderBy: { startsAt: "asc" },
+  });
+  if (!event) throw new Error("No future ceremony is available for the preview.");
+
+  const recipientEmail = config.TEST_EMAIL_RECIPIENT;
+  const recipientPhone = config.TEST_SMS_RECIPIENT;
+  const date = event.startsAt.toLocaleDateString("en-US", { timeZone: event.timezone, dateStyle: "long" });
+  const location = [event.venueName, event.address].filter(Boolean).join(", ") || "location details pending";
+  const confirmationUrl = `${config.APP_URL}/confirm/test`;
+  const subject = `[TEST] Please confirm your event on ${date}`;
+  const emailBody = `This is a test of the Authentic Moments 4-week reminder.\n\nEvent: ${event.name}\nDate: ${date}\nLocation: ${location}\n\nPlease use the button below to confirm.`;
+  const smsBody = `[TEST] Authentic Moments: Your event is one week away. ${event.name} is on ${date} at ${location}. Please confirm: ${confirmationUrl}`;
+
+  const results = await Promise.allSettled([
+    (async () => {
+      if (!config.RESEND_API_KEY) throw new Error("Resend API key is not configured");
+      if (!recipientEmail) throw new Error("Test email recipient is not configured");
+      const result = await new Resend(config.RESEND_API_KEY).emails.send({
+        from: config.EMAIL_FROM,
+        to: recipientEmail,
+        subject,
+        text: `${emailBody}\n\nConfirm assignment: ${confirmationUrl}`,
+        html: `<main style="font-family:Arial;max-width:600px;margin:auto"><p>${escapeHtml(emailBody).replaceAll("\n", "<br>")}</p><p><a href="${confirmationUrl}" style="background:#1f4438;color:white;padding:12px 20px;text-decoration:none;border-radius:4px;display:inline-block">Confirm Assignment</a></p></main>`,
+      });
+      if (result.error || !result.data) throw new Error(`Email: ${result.error?.message ?? "Resend rejected message"}`);
+      return result.data.id;
+    })(),
+    (async () => {
+      if (!config.QUO_API_KEY || !config.QUO_PHONE_NUMBER) throw new Error("Quo sender is not configured");
+      if (!recipientPhone) throw new Error("Test SMS recipient is not configured");
+      const response = await fetch(`${config.QUO_API_BASE_URL}/messages`, {
+        method: "POST",
+        headers: { Authorization: config.QUO_API_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ from: config.QUO_PHONE_NUMBER, to: [recipientPhone], content: smsBody }),
+      });
+      if (!response.ok) throw new Error(`SMS: Quo rejected message (${response.status})`);
+      return response.text();
+    })(),
+  ]);
+
+  const errors = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map(result => result.reason instanceof Error ? result.reason.message : String(result.reason));
+  if (errors.length) throw new Error(errors.join("; "));
+}
+
 function escapeHtml(value: string) { return value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
