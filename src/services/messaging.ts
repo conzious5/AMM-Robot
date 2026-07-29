@@ -28,7 +28,8 @@ export async function sendPlannedAction(actionId: string) {
       if (!recipient) throw new Error("Test email recipient is not configured");
       const prefix = config.TEST_MODE ? `[TEST for ${person.email}] ` : "";
       const result = await new Resend(config.RESEND_API_KEY).emails.send({
-        from: config.EMAIL_FROM, to: recipient, replyTo: config.EMAIL_REPLY_DOMAIN ? `reply+${conversation.id}@${config.EMAIL_REPLY_DOMAIN}` : undefined,
+        from: config.TEST_MODE ? "Authentic Moments Scheduling <onboarding@resend.dev>" : config.EMAIL_FROM,
+        to: recipient, replyTo: config.EMAIL_REPLY_DOMAIN ? `reply+${conversation.id}@${config.EMAIL_REPLY_DOMAIN}` : undefined,
         subject: `${prefix}${action.subjectPreview ?? "Please confirm your assignment"}`, text: `${prefix}${body}`,
         html: `<main style="font-family:Arial;max-width:600px;margin:auto"><p>${escapeHtml(prefix + body).replaceAll("\n", "<br>")}</p>${url ? `<p><a href="${url}" style="background:#1f4438;color:white;padding:12px 20px;text-decoration:none;border-radius:4px;display:inline-block">Confirm Assignment</a></p>` : ""}</main>`,
         headers: { "Idempotency-Key": action.idempotencyKey },
@@ -51,7 +52,7 @@ export async function sendPlannedAction(actionId: string) {
   });
 }
 
-export async function sendReminderPreview() {
+export async function sendReminderPreview(channel: "EMAIL" | "SMS" | "BOTH" = "BOTH") {
   const config = env();
   const event = await db.event.findFirst({
     where: { startsAt: { gt: new Date() }, canceled: false, status: "SCHEDULED" },
@@ -68,12 +69,13 @@ export async function sendReminderPreview() {
   const emailBody = `This is a test of the Authentic Moments 4-week reminder.\n\nEvent: ${event.name}\nDate: ${date}\nLocation: ${location}\n\nPlease use the button below to confirm.`;
   const smsBody = `[TEST] Authentic Moments: Your event is one week away. ${event.name} is on ${date} at ${location}. Please confirm: ${confirmationUrl}`;
 
-  const results = await Promise.allSettled([
-    (async () => {
+  const sends: Promise<unknown>[] = [];
+  if (channel !== "SMS") {
+    sends.push((async () => {
       if (!config.RESEND_API_KEY) throw new Error("Resend API key is not configured");
       if (!recipientEmail) throw new Error("Test email recipient is not configured");
       const result = await new Resend(config.RESEND_API_KEY).emails.send({
-        from: config.EMAIL_FROM,
+        from: "Authentic Moments Scheduling <onboarding@resend.dev>",
         to: recipientEmail,
         subject,
         text: `${emailBody}\n\nConfirm assignment: ${confirmationUrl}`,
@@ -81,8 +83,10 @@ export async function sendReminderPreview() {
       });
       if (result.error || !result.data) throw new Error(`Email: ${result.error?.message ?? "Resend rejected message"}`);
       return result.data.id;
-    })(),
-    (async () => {
+    })());
+  }
+  if (channel !== "EMAIL") {
+    sends.push((async () => {
       if (!config.QUO_API_KEY || !config.QUO_PHONE_NUMBER) throw new Error("Quo sender is not configured");
       if (!recipientPhone) throw new Error("Test SMS recipient is not configured");
       const response = await fetch(`${config.QUO_API_BASE_URL}/messages`, {
@@ -92,8 +96,9 @@ export async function sendReminderPreview() {
       });
       if (!response.ok) throw new Error(`SMS: Quo rejected message (${response.status})`);
       return response.text();
-    })(),
-  ]);
+    })());
+  }
+  const results = await Promise.allSettled(sends);
 
   const errors = results
     .filter((result): result is PromiseRejectedResult => result.status === "rejected")

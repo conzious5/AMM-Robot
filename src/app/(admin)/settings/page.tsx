@@ -18,11 +18,12 @@ async function sync() {
   revalidatePath("/settings");
 }
 
-async function sendTest() {
+async function sendTest(data: FormData) {
   "use server";
-  let result = "sent";
+  const channel = String(data.get("channel")) === "EMAIL" ? "EMAIL" : "SMS";
+  let result = `${channel.toLowerCase()}-sent`;
   try {
-    await sendReminderPreview();
+    await sendReminderPreview(channel);
   } catch (error) {
     result = error instanceof Error ? error.message : "Test send failed";
   }
@@ -62,10 +63,12 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
         <div className="card">
           <h3>Reminder test</h3>
           <p>Email and SMS test configuration: <b>{testReady ? "Ready" : "Incomplete"}</b></p>
-          {test === "sent" && <p>Test email and text accepted by their providers.</p>}
-          {test && test !== "sent" && <p className="danger">{test}</p>}
+          {test === "email-sent" && <p>Test email accepted by Resend.</p>}
+          {test === "sms-sent" && <p>Test text accepted by Quo.</p>}
+          {test && !["email-sent", "sms-sent"].includes(test) && <p className="danger">{test}</p>}
           <form action={sendTest}>
-            <button disabled={!testReady}>Send test email and text</button>
+            <button name="channel" value="EMAIL" disabled={!testReady}>Send test email</button>{" "}
+            <button name="channel" value="SMS" disabled={!testReady}>Send test text</button>
           </form>
         </div>
       </section>
