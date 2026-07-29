@@ -1,15 +1,16 @@
 import OpenAI from "openai";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { isFinancialQuestion } from "@/services/inbound";
+import { isFinancialQuestion, isStandardPayQuestion, standardPayReply } from "@/services/inbound";
 
 export async function getPersonSchedule(personId: string, start: Date, end: Date) {
   return db.assignment.findMany({ where: { personId, active: true, event: { startsAt: { gte: start, lte: end }, canceled: false } }, select: { id: true, role: true, confirmationStatus: true, event: { select: { name: true, startsAt: true, endsAt: true, timezone: true, venueName: true, address: true } } }, orderBy: { event: { startsAt: "asc" } } });
 }
 export async function answerScheduleQuestion(personId: string, text: string) {
   const config = env();
+  if (isStandardPayQuestion(text)) return standardPayReply(text);
   if (isFinancialQuestion(text)) {
-    return "For privacy and security, this number cannot access or share pay, rates, invoices, billing, contracts, or other financial information. Please contact Authentic Moments administration directly.";
+    return "For privacy and security, this number can only share Authentic Moments' published standard contractor rates and mileage policy. It cannot access individual payouts, invoices, client pricing, billing, taxes, or contract amounts. Reply PAY for the standard rate card.";
   }
   if (!config.OPENAI_API_KEY) return "I could not interpret that automatically. An administrator will review your question.";
   const person = await db.person.findUniqueOrThrow({ where: { id: personId } });
@@ -23,7 +24,8 @@ export async function answerScheduleQuestion(personId: string, text: string) {
     store: false,
     instructions: `You are the Authentic Moments contractor scheduling assistant. Today is ${new Date().toISOString()}. Sender is ${person.displayName}.
 Answer only questions about this sender's active ceremony assignments using the scheduling tool. Allowed facts are event name, assigned role, confirmation status, date, start/end time, timezone, venue, and address.
-Never reveal or discuss pay, rates, compensation, pricing, fees, invoices, billing, taxes, contract amounts, client financial information, raw CRM records, or another contractor's information. If asked, say financial information is unavailable by text and direct them to Authentic Moments administration.
+The only financial information allowed is this fixed public contractor policy: 8 hours $950; 6 hours $750; 3 hours $450; 1 hour $350; additional hours $125/hour; travel reimbursement is $0.68 per mile for total trip mileage over 120 miles, calculated as max(0, total trip miles - 120) × $0.68.
+Never reveal or infer individual payouts, invoices, client pricing, fees, billing, taxes, contract amounts, client financial information, raw CRM records, or another contractor's information.
 Never invent details. Clearly say when a field is unavailable in VSCO. Keep SMS replies concise.`,
     input: text,
     tools,
