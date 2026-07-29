@@ -10,6 +10,7 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
   const run = await db.syncRun.create({ data: { provider: "VSCO", status: "RUNNING" } });
   const stats = { fetched: 0, created: 0, updated: 0, skipped: 0, failed: 0, warnings: [] as string[] };
   try {
+    await applyPersonnelOverrides();
     for await (const page of provider.events({ from: addDays(new Date(), -env().VSCO_SYNC_HISTORY_DAYS), to: addDays(new Date(), env().VSCO_SYNC_FUTURE_DAYS) })) {
       for (const item of page.events) {
         stats.fetched++;
@@ -39,6 +40,10 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
             if (!person && email) person = await db.person.findUnique({ where: { normalizedEmail: email } });
             if (!person && phone) person = await db.person.findUnique({ where: { phone } });
             if (!person) person = await db.person.create({ data: { vscoExternalId: member.id, firstName: member.firstName, lastName: member.lastName, displayName: member.name ?? `${member.firstName} ${member.lastName}`.trim(), email: member.email, normalizedEmail: email, phone, role: assignmentRole(source.role) === "VIDEOGRAPHER" ? "VIDEOGRAPHER" : "PHOTOGRAPHER", rawProviderPayload: member } });
+            if (["danielle tolson", "craig babineau"].includes(person.displayName.trim().toLowerCase())) {
+              stats.skipped++;
+              continue;
+            }
             const role = assignmentRole(source.role);
             const externalAssignment = source.id
               ? await db.assignment.findUnique({ where: { externalAssignmentId: source.id } })
@@ -64,9 +69,60 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
       }
       await db.syncRun.update({ where: { id: run.id }, data: { cursor: page.cursor } });
     }
+    await archiveNonCeremonyEvents();
     return await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: stats.failed ? "PARTIAL" : "SUCCEEDED", itemsFetched: stats.fetched, itemsCreated: stats.created, itemsUpdated: stats.updated, itemsSkipped: stats.skipped, itemsFailed: stats.failed, details: stats } });
   } catch (error) {
     await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: "FAILED", errorSummary: error instanceof Error ? error.message : "Unknown error", details: stats } });
     throw error;
+  }
+}
+
+async function applyPersonnelOverrides() {
+  const danielle = await db.person.findFirst({ where: { displayName: { equals: "Danielle Tolson", mode: "insensitive" } } });
+  if (danielle) {
+    await db.plannedAction.updateMany({
+      where: { personId: danielle.id, status: { in: ["PLANNED", "QUEUED"] } },
+      data: { status: "CANCELED", canceledAt: new Date() },
+    });
+    await db.assignment.updateMany({ where: { personId: danielle.id }, data: { active: false, paused: true } });
+    await db.person.update({
+      where: { id: danielle.id },
+      data: {
+        active: false,
+        paused: true,
+        emailEligible: false,
+        smsEligible: false,
+        email: null,
+        normalizedEmail: null,
+        phone: null,
+        notes: "[DO_NOT_CONTACT_REMOVED] Removed by administrator.",
+      },
+    });
+  }
+  const craig = await db.person.findFirst({ where: { displayName: { equals: "Craig Babineau", mode: "insensitive" } } });
+  if (craig) {
+    await db.plannedAction.updateMany({
+      where: { personId: craig.id, status: { in: ["PLANNED", "QUEUED"] } },
+      data: { status: "CANCELED", canceledAt: new Date() },
+    });
+    await db.assignment.updateMany({ where: { personId: craig.id }, data: { active: false, paused: true } });
+    await db.person.update({ where: { id: craig.id }, data: { active: false, paused: true } });
+  }
+}
+
+async function archiveNonCeremonyEvents() {
+  const events = await db.event.findMany({
+    where: { vscoEventId: { not: null }, canceled: false },
+    select: { id: true, rawProviderPayload: true },
+  });
+  for (const event of events) {
+    const raw = event.rawProviderPayload as { name?: unknown } | null;
+    if (typeof raw?.name === "string" && raw.name.trim().toLowerCase().includes("ceremony")) continue;
+    await db.plannedAction.updateMany({
+      where: { eventId: event.id, status: { in: ["PLANNED", "QUEUED"] } },
+      data: { status: "CANCELED", canceledAt: new Date() },
+    });
+    await db.assignment.updateMany({ where: { eventId: event.id }, data: { active: false, paused: true } });
+    await db.event.update({ where: { id: event.id }, data: { canceled: true, paused: true, status: "CANCELED" } });
   }
 }
