@@ -3,6 +3,8 @@ import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { issueConfirmationToken } from "@/lib/confirmation";
 
+const logoUrl = "https://authentic-moments.com/wp-content/uploads/2023/12/Authentic-Moments-Website-Logo-v3.png";
+
 export async function sendPlannedAction(actionId: string) {
   return db.$transaction(async tx => {
     const action = await tx.plannedAction.findUniqueOrThrow({ where: { id: actionId }, include: { assignment: { include: { event: true, person: true } }, person: true } });
@@ -27,11 +29,18 @@ export async function sendPlannedAction(actionId: string) {
       recipient = config.TEST_MODE ? config.TEST_EMAIL_RECIPIENT ?? "" : person.email;
       if (!recipient) throw new Error("Test email recipient is not configured");
       const prefix = config.TEST_MODE ? `[TEST for ${person.email}] ` : "";
+      const subject = `${prefix}${action.subjectPreview ?? "Please confirm your assignment"}`;
       const result = await new Resend(config.RESEND_API_KEY).emails.send({
         from: config.TEST_MODE ? "Authentic Moments Scheduling <onboarding@resend.dev>" : config.EMAIL_FROM,
         to: recipient, replyTo: config.EMAIL_REPLY_DOMAIN ? `reply+${conversation.id}@${config.EMAIL_REPLY_DOMAIN}` : undefined,
-        subject: `${prefix}${action.subjectPreview ?? "Please confirm your assignment"}`, text: `${prefix}${body}`,
-        html: `<main style="font-family:Arial;max-width:600px;margin:auto"><p>${escapeHtml(prefix + body).replaceAll("\n", "<br>")}</p>${url ? `<p><a href="${url}" style="background:#1f4438;color:white;padding:12px 20px;text-decoration:none;border-radius:4px;display:inline-block">Confirm Assignment</a></p>` : ""}</main>`,
+        subject,
+        text: `${prefix}${body}`,
+        html: brandedEmailHtml({
+          preheader: subject,
+          title: "Please confirm your assignment",
+          body: prefix + (url ? body.replaceAll(url, "").trim() : body),
+          confirmationUrl: url,
+        }),
         headers: { "Idempotency-Key": action.idempotencyKey },
       });
       if (result.error || !result.data) throw new Error(result.error?.message ?? "Resend rejected message");
@@ -54,19 +63,26 @@ export async function sendPlannedAction(actionId: string) {
 
 export async function sendReminderPreview(channel: "EMAIL" | "SMS" | "BOTH" = "BOTH") {
   const config = env();
-  const event = await db.event.findFirst({
-    where: { startsAt: { gt: new Date() }, canceled: false, status: "SCHEDULED" },
-    orderBy: { startsAt: "asc" },
+  const assignment = await db.assignment.findFirst({
+    where: {
+      active: true,
+      person: { active: true, paused: false },
+      event: { startsAt: { gt: new Date() }, canceled: false, status: "SCHEDULED" },
+    },
+    include: { event: true },
+    orderBy: { event: { startsAt: "asc" } },
   });
-  if (!event) throw new Error("No future ceremony is available for the preview.");
+  if (!assignment) throw new Error("No future ceremony assignment is available for the preview.");
+  const event = assignment.event;
 
   const recipientEmail = config.TEST_EMAIL_RECIPIENT;
   const recipientPhone = config.TEST_SMS_RECIPIENT;
   const date = event.startsAt.toLocaleDateString("en-US", { timeZone: event.timezone, dateStyle: "long" });
   const location = [event.venueName, event.address].filter(Boolean).join(", ") || "location details pending";
-  const confirmationUrl = `${config.APP_URL}/confirm/test`;
+  const role = assignment.role === "VIDEOGRAPHER" ? "video" : "photo";
+  const confirmationUrl = `${config.APP_URL}/confirm/test?role=${role}`;
   const subject = `[TEST] Please confirm your event on ${date}`;
-  const emailBody = `This is a test of the Authentic Moments 4-week reminder.\n\nEvent: ${event.name}\nDate: ${date}\nLocation: ${location}\n\nPlease use the button below to confirm.`;
+  const emailBody = `Hello!\n\nThis is a test of the Authentic Moments 4-week reminder.\n\nEvent: ${event.name}\nDate: ${date}\nLocation: ${location}\nRole: ${assignment.role.toLowerCase()}\n\nPlease review the details and confirm your assignment.`;
   const smsBody = `[TEST] Authentic Moments: Your event is one week away. ${event.name} is on ${date} at ${location}. Please confirm: ${confirmationUrl}`;
 
   const sends: Promise<unknown>[] = [];
@@ -79,7 +95,12 @@ export async function sendReminderPreview(channel: "EMAIL" | "SMS" | "BOTH" = "B
         to: recipientEmail,
         subject,
         text: `${emailBody}\n\nConfirm assignment: ${confirmationUrl}`,
-        html: `<main style="font-family:Arial;max-width:600px;margin:auto"><p>${escapeHtml(emailBody).replaceAll("\n", "<br>")}</p><p><a href="${confirmationUrl}" style="background:#1f4438;color:white;padding:12px 20px;text-decoration:none;border-radius:4px;display:inline-block">Confirm Assignment</a></p></main>`,
+        html: brandedEmailHtml({
+          preheader: subject,
+          title: "Your event is coming up",
+          body: emailBody,
+          confirmationUrl,
+        }),
       });
       if (result.error || !result.data) throw new Error(`Email: ${result.error?.message ?? "Resend rejected message"}`);
       return result.data.id;
@@ -104,6 +125,66 @@ export async function sendReminderPreview(channel: "EMAIL" | "SMS" | "BOTH" = "B
     .filter((result): result is PromiseRejectedResult => result.status === "rejected")
     .map(result => result.reason instanceof Error ? result.reason.message : String(result.reason));
   if (errors.length) throw new Error(errors.join("; "));
+}
+
+function brandedEmailHtml({
+  preheader,
+  title,
+  body,
+  confirmationUrl,
+}: {
+  preheader: string;
+  title: string;
+  body: string;
+  confirmationUrl?: string;
+}) {
+  const safeBody = escapeHtml(body).replaceAll("\n", "<br>");
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f3f0e8;color:#001d3d;font-family:Arial,Helvetica,sans-serif">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">${escapeHtml(preheader)}</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f3f0e8">
+    <tr>
+      <td align="center" style="padding:28px 12px">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 8px 28px rgba(0,29,61,.12)">
+          <tr>
+            <td align="center" style="background:#001d3d;padding:30px 28px 24px;border-bottom:5px solid #ffc300">
+              <img src="${logoUrl}" width="360" alt="Authentic Moments Photo &amp; Video" style="display:block;width:100%;max-width:360px;height:auto;border:0">
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:38px 42px 18px">
+              <p style="margin:0 0 10px;color:#a97a45;font-size:12px;line-height:18px;font-weight:700;letter-spacing:2px;text-transform:uppercase">Crew confirmation</p>
+              <h1 style="margin:0;color:#001d3d;font-size:30px;line-height:38px;font-weight:700">${escapeHtml(title)}</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 42px 8px">
+              <div style="background:#f8f6f0;border-left:4px solid #ffc300;border-radius:8px;padding:22px 24px;color:#26384a;font-size:16px;line-height:26px">${safeBody}</div>
+            </td>
+          </tr>
+          ${confirmationUrl ? `<tr>
+            <td align="center" style="padding:24px 42px 38px">
+              <a href="${escapeHtml(confirmationUrl)}" style="display:inline-block;background:#ffc300;color:#001d3d;text-decoration:none;font-size:16px;line-height:20px;font-weight:700;padding:15px 28px;border-radius:7px">Confirm Assignment</a>
+              <p style="margin:16px 0 0;color:#6b7785;font-size:12px;line-height:18px">Opening the link does not confirm you. Review the details, then press Confirm Assignment.</p>
+            </td>
+          </tr>` : ""}
+          <tr>
+            <td align="center" style="background:#003566;padding:24px 30px;color:#ffffff;font-size:12px;line-height:19px">
+              <strong style="font-size:13px">Authentic Moments Media</strong><br>
+              Bold, vibrant, authentic wedding photo &amp; video.<br>
+              <a href="https://authentic-moments.com/" style="color:#ffd60a;text-decoration:none">authentic-moments.com</a>
+              &nbsp;&bull;&nbsp;
+              <a href="mailto:hello@authentic-moments.com" style="color:#ffd60a;text-decoration:none">hello@authentic-moments.com</a>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 }
 
 function escapeHtml(value: string) { return value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
