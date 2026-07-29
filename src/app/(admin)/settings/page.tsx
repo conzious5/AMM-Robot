@@ -3,11 +3,12 @@ import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { sendReminderPreview } from "@/services/messaging";
-import { runVscoSync } from "@/services/sync";
+import { reconcileVscoSyncFailureAlert, runVscoSync } from "@/services/sync";
 import bcrypt from "bcryptjs";
 import { requireAdmin } from "@/lib/auth";
 import { assertPermission } from "@/lib/permissions";
-import { inspectVscoTaskCapabilities } from "@/services/tasks";
+import { inspectVscoTaskCapabilities, refreshCalculatedTaskStatuses } from "@/services/tasks";
+import { reconcileAllEventReadiness } from "@/services/readiness";
 
 async function update(data: FormData) {
   "use server";
@@ -76,6 +77,10 @@ async function inspectTasks() {
 async function sync() {
   "use server";
   await runVscoSync();
+  await reconcileVscoSyncFailureAlert();
+  await inspectVscoTaskCapabilities();
+  await refreshCalculatedTaskStatuses();
+  await reconcileAllEventReadiness();
   revalidatePath("/settings");
 }
 
