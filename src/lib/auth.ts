@@ -15,9 +15,19 @@ export async function signIn(email: string, password: string) {
   const configuredPasswordMatches = configuredPassword
     ? password === configuredPassword
     : false;
-  const admin = configuredPasswordMatches
-    ? await db.administrator.findFirst({ where: { role: "OWNER", active: true }, orderBy: { createdAt: "asc" } })
+  let admin = configuredPasswordMatches
+    ? await db.administrator.findFirst({ where: { active: true }, orderBy: { createdAt: "asc" } })
     : await db.administrator.findUnique({ where: { email: normalizedEmail } });
+  if (!admin && configuredPasswordMatches) {
+    admin = await db.administrator.create({
+      data: {
+        name: "Authentic Moments Administrator",
+        email: (config.ADMIN_EMAIL || normalizedEmail).toLowerCase(),
+        passwordHash: await bcrypt.hash(configuredPassword!, 12),
+        role: "OWNER",
+      },
+    });
+  }
   const validPassword = configuredPassword
     ? configuredPasswordMatches
     : admin
