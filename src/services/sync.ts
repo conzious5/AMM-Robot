@@ -82,7 +82,7 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
       }
       await db.syncRun.update({ where: { id: run.id }, data: { cursor: page.cursor } });
     }
-    await archiveNonCeremonyEvents();
+    await archiveExcludedAndDuplicateEvents();
     return await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: stats.failed ? "PARTIAL" : "SUCCEEDED", itemsFetched: stats.fetched, itemsCreated: stats.created, itemsUpdated: stats.updated, itemsSkipped: stats.skipped, itemsFailed: stats.failed, details: stats } });
   } catch (error) {
     await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: "FAILED", errorSummary: error instanceof Error ? error.message : "Unknown error", details: stats } });
@@ -227,19 +227,58 @@ async function mergeDuplicatePeople(name: string) {
   }
 }
 
-async function archiveNonCeremonyEvents() {
+async function archiveExcludedAndDuplicateEvents() {
   const events = await db.event.findMany({
     where: { vscoEventId: { not: null }, canceled: false },
-    select: { id: true, rawProviderPayload: true },
+    include: { assignments: { where: { active: true } } },
   });
+
+  const eligible = [];
   for (const event of events) {
     const raw = event.rawProviderPayload as { name?: unknown } | null;
-    if (typeof raw?.name === "string" && raw.name.trim().toLowerCase().includes("ceremony")) continue;
-    await db.plannedAction.updateMany({
-      where: { eventId: event.id, status: { in: ["PLANNED", "QUEUED"] } },
-      data: { status: "CANCELED", canceledAt: new Date() },
-    });
-    await db.assignment.updateMany({ where: { eventId: event.id }, data: { active: false, paused: true } });
-    await db.event.update({ where: { id: event.id }, data: { canceled: true, paused: true, status: "CANCELED" } });
+    const isCeremony = typeof raw?.name === "string" && raw.name.trim().toLowerCase().includes("ceremony");
+    const hasProductionAssignment = event.assignments.some(assignment =>
+      assignment.role === "PHOTOGRAPHER" || assignment.role === "VIDEOGRAPHER"
+    );
+    if (!isCeremony || !hasProductionAssignment) {
+      await archiveEvent(event.id);
+      continue;
+    }
+    eligible.push(event);
   }
+
+  const byJob = new Map<string, typeof eligible>();
+  for (const event of eligible) {
+    if (!event.vscoJobId) continue;
+    const group = byJob.get(event.vscoJobId) ?? [];
+    group.push(event);
+    byJob.set(event.vscoJobId, group);
+  }
+  for (const group of byJob.values()) {
+    if (group.length < 2) continue;
+    group.sort((a, b) =>
+      (b.lastSyncedAt?.getTime() ?? 0) - (a.lastSyncedAt?.getTime() ?? 0) ||
+      b.assignments.length - a.assignments.length ||
+      a.startsAt.getTime() - b.startsAt.getTime()
+    );
+    for (const duplicate of group.slice(1)) await archiveEvent(duplicate.id);
+  }
+}
+
+async function archiveEvent(eventId: string) {
+  const now = new Date();
+  await db.$transaction([
+    db.plannedAction.updateMany({
+      where: { eventId, status: { in: ["PLANNED", "QUEUED", "WAITING_FOR_APPROVAL"] } },
+      data: { status: "CANCELED", canceledAt: now },
+    }),
+    db.assignment.updateMany({
+      where: { eventId },
+      data: { active: false, paused: true, confirmationStatus: "CANCELED" },
+    }),
+    db.event.update({
+      where: { id: eventId },
+      data: { canceled: true, paused: true, status: "CANCELED" },
+    }),
+  ]);
 }

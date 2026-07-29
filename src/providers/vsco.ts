@@ -30,6 +30,9 @@ export type NormalizedVscoEvent = {
   externalId: string; jobId?: string; name: string; eventType: string; startsAt: Date; endsAt?: Date;
   timezone: string; venueName?: string; address?: string; canceled: boolean; assignments: z.infer<typeof Assignment>[] | null; raw: unknown;
 };
+export const isProductionAssignment = (assignment: z.infer<typeof Assignment>) =>
+  /\b(photo(?:grapher|graphy)?|video(?:grapher|graphy)?)\b/i.test(assignment.role);
+
 export function normalizeVscoEvent(input: unknown): NormalizedVscoEvent {
   const value = Event.parse(input);
   return {
@@ -69,7 +72,12 @@ export class VscoWorkspaceProvider {
         if (!event.startUtc) continue;
         const startsAt = new Date(event.startUtc);
         if (startsAt < params.from || startsAt > params.to) continue;
-        const assignments = event.jobId ? await this.assignments(event.jobId) : [];
+        const assignments = event.jobId
+          ? (await this.assignments(event.jobId)).filter(isProductionAssignment)
+          : [];
+        // A ceremony calendar item is a booked gig for this system only when
+        // VSCO has assigned a photographer or videographer to its job.
+        if (!assignments.length) continue;
         if (event.jobId) this.ceremonyJobs.add(event.jobId);
         const address = event.location?.address;
         normalized.push({

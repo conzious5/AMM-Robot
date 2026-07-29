@@ -64,6 +64,8 @@ VSCO publicly states that not all Workspace data is available in its first publi
 
 The sync supports cursor pagination, exponential retry for 429/5xx responses, historical/future windows, raw payload storage, event cancellation, assignment addition/removal, stale-reminder cancellation, and idempotent upserts.
 
+For this application, a booked gig is a VSCO ceremony whose job has an assigned photographer or videographer. Lead calendar items and ceremonies without a production assignment are skipped. Older duplicate ceremony rows sharing the same VSCO job are automatically archived, along with their pending reminders.
+
 ## Resend setup
 
 1. Verify the sending domain and set `EMAIL_FROM`.
