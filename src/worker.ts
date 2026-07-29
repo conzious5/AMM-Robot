@@ -183,10 +183,21 @@ const webhookWorker = new Worker("webhooks", async job => {
 worker.on("failed", (job, error) => {
   log.error({ jobId: job?.id, error: error.message }, "job failed");
   const exhausted = job && job.attemptsMade >= (job.opts.attempts ?? 1);
-  if (exhausted) void notifySystemDeveloper({
-    key: `planned-action-job:${job.id}`,
-    subject: "AMM Robot issue: contractor communication failed",
-    body: `A planned communication exhausted all retry attempts.\n\nJob: ${job.id}\nError: ${error.message}`,
+  if (exhausted) void (async () => {
+    const actionId = job.data.actionId as string | undefined;
+    if (actionId) {
+      await db.plannedAction.updateMany({
+        where: { id: actionId, status: { in: ["PLANNED", "QUEUED", "PROCESSING"] } },
+        data: { status: "FAILED", jobQueueId: null, lastError: error.message },
+      });
+    }
+    await notifySystemDeveloper({
+      key: `planned-action-job:${job.id}`,
+      subject: "AMM Robot issue: contractor communication failed",
+      body: `A planned communication exhausted all retry attempts.\n\nJob: ${job.id}\nError: ${error.message}`,
+    });
+  })().catch(alertError => {
+    log.error({ jobId: job.id, error: alertError instanceof Error ? alertError.message : "Unknown error" }, "failed to record exhausted communication job");
   });
 });
 webhookWorker.on("failed", (job, error) => {

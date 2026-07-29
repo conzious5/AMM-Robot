@@ -3,6 +3,8 @@ import Link from "next/link";
 import { differenceInCalendarDays } from "date-fns";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
+import { communicationChannelLabel } from "@/lib/channels";
+import { launchIncludedEventWhere } from "@/lib/launch-cutoff";
 import { db } from "@/lib/db";
 import {
   addOperationalNote,
@@ -95,7 +97,7 @@ export default async function Page() {
   const sevenDays = new Date(now.getTime() + 7 * 86400000);
   const [events, alerts, changes, actions, people, agentResult, conflicts] = await Promise.all([
     db.event.findMany({
-      where: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } },
+      where: { startsAt: { gte: now }, canceled: false, ...launchIncludedEventWhere },
       include: {
         assignments: { where: { active: true }, include: { person: true, messages: true, plannedActions: true } },
         operationalTasks: { where: { status: { notIn: ["DELETED"] } }, orderBy: { dueAt: "asc" } },
@@ -168,7 +170,7 @@ export default async function Page() {
             <div className="operations-context">
               <span><b>Messages sent:</b> {event.messages.filter(message => message.direction === "OUTBOUND").length}</span>
               <span><b>Last response:</b> {lastResponse ? `${lastResponse.person.displayName} · ${lastResponse.textContent.slice(0, 100)}` : "None"}</span>
-              <span><b>Next action:</b> {nextAction ? `${nextAction.scheduledFor.toLocaleString()} · ${nextAction.reason}` : "None planned"}</span>
+              <span><b>Next action:</b> {nextAction ? `${nextAction.scheduledFor.toLocaleString()} · ${communicationChannelLabel(nextAction.channel)} · ${nextAction.reason}` : "None planned"}</span>
             </div>
 
             {eventAlerts.map(alert => (
@@ -302,7 +304,7 @@ export default async function Page() {
 
       <h2>Upcoming robot actions</h2>
       <table><thead><tr><th>When</th><th>Person</th><th>Event</th><th>Action</th><th>Status</th></tr></thead><tbody>
-        {actions.map(action => <tr key={action.id}><td>{action.scheduledFor.toLocaleString()}</td><td>{action.person?.displayName ?? "System"}</td><td>{action.event?.name ?? "—"}</td><td>{action.reason}</td><td><span className="pill">{action.status}</span></td></tr>)}
+        {actions.map(action => <tr key={action.id}><td>{action.scheduledFor.toLocaleString()}</td><td>{action.person?.displayName ?? "System"}</td><td>{action.event?.name ?? "—"}</td><td>{communicationChannelLabel(action.channel)} · {action.reason}</td><td><span className="pill">{action.status}</span></td></tr>)}
       </tbody></table>
     </>
   );

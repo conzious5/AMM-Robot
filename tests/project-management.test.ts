@@ -11,6 +11,9 @@ import { assignmentIsInsideLaunchExclusion, contractorLaunchEligibility } from "
 import { administratorInviteIsUsable, administratorInviteKey } from "@/lib/admin-invite";
 import { isDismissibleOperationErrorKey, operationErrorDismissalSettingKey } from "@/services/operation-status";
 import { resolveCommunicationServiceStatus } from "@/services/service-control";
+import { localDateKey, nextUnoccupiedLocalDay } from "@/lib/quiet-hours";
+import { communicationChannelLabel } from "@/lib/channels";
+import { isLaunchCutoffExcluded } from "@/lib/launch-cutoff";
 
 const base = (overrides: Partial<ReadinessInput> = {}): ReadinessInput => ({
   canceled: false,
@@ -70,6 +73,26 @@ describe("project-manager acceptance", () => {
     expect(resolveCommunicationServiceStatus(undefined, { status: "PREPARED" })).toBe("SUSPENDED");
     expect(resolveCommunicationServiceStatus({ status: "ACTIVE" }, { status: "PREPARED" })).toBe("ACTIVE");
     expect(resolveCommunicationServiceStatus({ status: "SUSPENDED" }, { status: "LIVE" })).toBe("SUSPENDED");
+  });
+
+  it("limits a contractor to one reminder per local calendar day", () => {
+    const timezone = "America/Denver";
+    const desired = new Date("2026-07-30T14:00:00.000Z");
+    const occupied = new Set([localDateKey(desired, timezone)]);
+    const next = nextUnoccupiedLocalDay(desired, timezone, occupied);
+    expect(localDateKey(next, timezone)).toBe("2026-07-31");
+    expect(next.getUTCHours()).toBe(14);
+  });
+
+  it("labels contractor communication in plain language", () => {
+    expect(communicationChannelLabel("EMAIL")).toBe("Email");
+    expect(communicationChannelLabel("SMS")).toBe("Text message");
+  });
+
+  it("keeps only the marked launch-cutoff weddings excluded", () => {
+    expect(isLaunchCutoffExcluded(null)).toBe(false);
+    expect(isLaunchCutoffExcluded("ordinary note")).toBe(false);
+    expect(isLaunchCutoffExcluded("[LAUNCH_CUTOFF_EXCLUDED] owner decision")).toBe(true);
   });
 
   it("stores administrator setup tokens only as stable hashes", () => {

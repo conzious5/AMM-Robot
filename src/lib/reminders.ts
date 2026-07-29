@@ -1,10 +1,14 @@
 import { addMinutes, isBefore } from "date-fns";
 import { db } from "./db";
-import { nextAllowedTime } from "./quiet-hours";
+import { localDateKey, nextAllowedTime, nextUnoccupiedLocalDay } from "./quiet-hours";
 
 const activeActionStatuses = ["PLANNED", "QUEUED", "PROCESSING", "FAILED", "WAITING_FOR_APPROVAL"] as const;
 const administratorSkipReason = "Skipped by administrator";
 const waitingReason = "Waiting for previous reminder outcome";
+
+export function reminderDailySlotKey(personId: string, date: Date, timezone: string) {
+  return `reminder-daily-slot:${personId}:${localDateKey(date, timezone)}`;
+}
 
 function renderTemplate(template: string, assignment: {
   role: string;
@@ -94,6 +98,19 @@ export async function planAssignmentReminders(assignmentId: string, now = new Da
   let when = addMinutes(assignment.event.startsAt, -nextPolicy.offsetMinutes);
   if (isBefore(when, now)) when = addMinutes(now, 5);
   if (nextPolicy.honorQuietHours) when = nextAllowedTime(when, assignment.person.timezone);
+  const otherReminderActions = await db.plannedAction.findMany({
+    where: {
+      personId: assignment.personId,
+      type: { in: ["REMINDER", "ESCALATE"] },
+      idempotencyKey: { not: nextKey },
+      status: { in: ["PLANNED", "QUEUED", "PROCESSING", "COMPLETED"] },
+    },
+    select: { status: true, scheduledFor: true, completedAt: true },
+  });
+  const occupiedDateKeys = new Set(otherReminderActions.map(action =>
+    localDateKey(action.status === "COMPLETED" && action.completedAt ? action.completedAt : action.scheduledFor, assignment.person.timezone)
+  ));
+  when = nextUnoccupiedLocalDay(when, assignment.person.timezone, occupiedDateKeys);
 
   const preview = renderTemplate(nextPolicy.messageTemplate, assignment);
   const subject = nextPolicy.subjectTemplate

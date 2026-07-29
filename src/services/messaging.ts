@@ -2,9 +2,11 @@ import { Resend } from "resend";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { issueConfirmationToken } from "@/lib/confirmation";
-import { planAssignmentReminders } from "@/lib/reminders";
+import { planAssignmentReminders, reminderDailySlotKey } from "@/lib/reminders";
 import { helpMenu } from "@/services/inbound";
 import { resolveCommunicationServiceStatus } from "@/services/service-control";
+import { localDayBounds, nextUnoccupiedLocalDay } from "@/lib/quiet-hours";
+import { addMinutes } from "date-fns";
 
 const logoUrl = "https://authentic-moments.com/wp-content/uploads/2023/12/Authentic-Moments-Website-Logo-v3.png";
 
@@ -14,7 +16,8 @@ export async function sendPlannedAction(actionId: string) {
     if (!["PLANNED", "QUEUED", "FAILED"].includes(action.status)) return action;
     const assignment = action.assignment;
     const person = assignment?.person ?? action.person;
-    if (!person || (assignment && (!assignment.active || assignment.event.canceled || assignment.confirmationStatus === "CONFIRMED"))) {
+    const now = new Date();
+    if (!person || !person.active || (assignment && (!assignment.active || assignment.event.canceled || assignment.event.startsAt <= now || assignment.confirmationStatus === "CONFIRMED"))) {
       return tx.plannedAction.update({ where: { id: action.id }, data: { status: "SUPPRESSED", lastError: "Recipient or assignment is ineligible" } });
     }
     const config = env();
@@ -34,6 +37,49 @@ export async function sendPlannedAction(actionId: string) {
     }
     if (config.GLOBAL_COMMUNICATIONS_PAUSED || person.paused || assignment?.paused || assignment?.event.paused) {
       return tx.plannedAction.update({ where: { id: action.id }, data: { status: "SUPPRESSED", lastError: "Communications paused" } });
+    }
+    if (assignment && ["REMINDER", "ESCALATE"].includes(action.type)) {
+      const slotKey = reminderDailySlotKey(person.id, now, person.timezone);
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${slotKey}))`;
+      const [slot, bounds] = await Promise.all([
+        tx.setting.findUnique({ where: { key: slotKey } }),
+        Promise.resolve(localDayBounds(now, person.timezone)),
+      ]);
+      const slotValue = slot?.value as { actionId?: string } | undefined;
+      const completedToday = await tx.plannedAction.findFirst({
+        where: {
+          personId: person.id,
+          id: { not: action.id },
+          type: { in: ["REMINDER", "ESCALATE"] },
+          status: "COMPLETED",
+          completedAt: { gte: bounds.start, lt: bounds.end },
+        },
+        select: { id: true },
+      });
+      if ((slotValue?.actionId && slotValue.actionId !== action.id) || completedToday) {
+        const rescheduledFor = nextUnoccupiedLocalDay(addMinutes(now, 5), person.timezone, new Set([
+          slotKey.slice(slotKey.lastIndexOf(":") + 1),
+        ]));
+        const held = await tx.plannedAction.update({
+          where: { id: action.id },
+          data: {
+            status: "PLANNED",
+            scheduledFor: rescheduledFor,
+            jobQueueId: null,
+            lastError: "Rescheduled: contractor already received a reminder today",
+          },
+        });
+        await tx.assignment.update({ where: { id: assignment.id }, data: { nextReminderAt: rescheduledFor } });
+        return held;
+      }
+      if (!slot) {
+        await tx.setting.create({
+          data: {
+            key: slotKey,
+            value: { actionId: action.id, claimedAt: now.toISOString() },
+          },
+        });
+      }
     }
     const token = assignment && ["REMINDER", "ESCALATE"].includes(action.type)
       ? await issueConfirmationToken(assignment.id)

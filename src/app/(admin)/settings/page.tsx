@@ -12,6 +12,7 @@ import { inspectVscoTaskCapabilities, refreshCalculatedTaskStatuses } from "@/se
 import { reconcileAllEventReadiness } from "@/services/readiness";
 import { getProductionLaunchState, prepareProductionLaunch } from "@/services/go-live";
 import { getCommunicationServiceState } from "@/services/service-control";
+import { communicationChannelLabel } from "@/lib/channels";
 
 async function update(data: FormData) {
   "use server";
@@ -258,7 +259,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
         <form action={update} className="card" key={policy.id}>
           <input type="hidden" name="id" value={policy.id} />
           <b>{policy.name}</b>
-          <p>{policy.offsetMinutes / 1440} days before · {policy.channel} · attempt {policy.attemptNumber}</p>
+          <p>{policy.offsetMinutes / 1440} days before · {communicationChannelLabel(policy.channel)} · attempt {policy.attemptNumber}</p>
           <label>
             <input style={{ width: "auto" }} type="checkbox" name="enabled" defaultChecked={policy.active} /> Enabled
           </label>{" "}

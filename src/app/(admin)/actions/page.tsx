@@ -11,6 +11,7 @@ import {
   sendPlannedCommunicationNow,
   skipPlannedReminder,
 } from "@/services/operations";
+import { communicationChannelLabel } from "@/lib/channels";
 
 const activeStatuses = ["PLANNED", "QUEUED", "PROCESSING", "FAILED", "WAITING_FOR_APPROVAL"] as const;
 type View = "next" | "history" | "all";
@@ -91,7 +92,7 @@ export default async function Page({
               <br />
               {action.reason}
               <br />
-              <span className="pill">{action.channel}</span>
+              <span className="pill">{communicationChannelLabel(action.channel)}</span>
             </span>,
             <span key="preview">{action.messagePreview.slice(0, 150)}{action.messagePreview.length > 150 ? "…" : ""}</span>,
             <span key="status">

@@ -7,6 +7,7 @@ import { requireAdmin } from "@/lib/auth";
 import { assertPermission } from "@/lib/permissions";
 import { dismissOperationError, getOperationOverview, plainStatus, type OperationTone } from "@/services/operation-status";
 import { resolveOperationalAlert } from "@/services/operations";
+import { communicationChannelLabel } from "@/lib/channels";
 
 type RunRow = {
   key: string;
@@ -90,7 +91,7 @@ export default async function Page() {
         status: status.label,
         tone: status.tone,
         icon: status.icon,
-        summary: `${actionName(action.type)}${target ? ` · ${target}` : ""}${action.lastError ? ` · ${action.lastError}` : ""}`,
+        summary: `${actionName(action.type)} by ${communicationChannelLabel(action.channel).toLowerCase()}${target ? ` · ${target}` : ""}${action.lastError ? ` · ${action.lastError}` : ""}`,
       };
     }),
   ].sort((a, b) => b.when.getTime() - a.when.getTime()).slice(0, 50);

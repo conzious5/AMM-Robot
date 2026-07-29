@@ -2,31 +2,33 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { OperationStatusSummary } from "@/components/OperationStatusSummary";
 import { getOperationOverview } from "@/services/operation-status";
+import { communicationChannelLabel } from "@/lib/channels";
+import { launchIncludedEventWhere } from "@/lib/launch-cutoff";
 
 export default async function Dashboard() {
   const now = new Date();
   const [events, upcomingCount, pending, confirmed, declined, failed, actions, messages, sync, ready, needsAttention, overview] = await Promise.all([
     db.event.findMany({
-      where: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } },
+      where: { startsAt: { gte: now }, canceled: false, ...launchIncludedEventWhere },
       include: { assignments: { include: { person: true } } },
       orderBy: { startsAt: "asc" },
       take: 10,
     }),
-    db.event.count({ where: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } } }),
-    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, confirmationStatus: "PENDING" } }),
-    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, confirmationStatus: "CONFIRMED" } }),
-    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, confirmationStatus: "DECLINED" } }),
+    db.event.count({ where: { startsAt: { gte: now }, canceled: false, ...launchIncludedEventWhere } }),
+    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false, ...launchIncludedEventWhere }, confirmationStatus: "PENDING" } }),
+    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false, ...launchIncludedEventWhere }, confirmationStatus: "CONFIRMED" } }),
+    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false, ...launchIncludedEventWhere }, confirmationStatus: "DECLINED" } }),
     db.message.count({ where: { deliveryStatus: { in: ["FAILED", "BOUNCED", "COMPLAINED"] } } }),
     db.plannedAction.findMany({
-      where: { status: { in: ["PLANNED", "QUEUED"] }, event: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, person: { active: true } },
+      where: { status: { in: ["PLANNED", "QUEUED"] }, event: { startsAt: { gte: now }, canceled: false, ...launchIncludedEventWhere }, person: { active: true } },
       include: { person: true, event: true },
       orderBy: { scheduledFor: "asc" },
       take: 8,
     }),
     db.message.findMany({ where: { direction: "INBOUND" }, include: { person: true }, orderBy: { createdAt: "desc" }, take: 6 }),
     db.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
-    db.event.count({ where: { startsAt: { gte: now }, canceled: false, readinessStatus: "READY", NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } } }),
-    db.event.count({ where: { startsAt: { gte: now }, canceled: false, readinessStatus: { in: ["AT_RISK", "INCOMPLETE", "CHANGED_SINCE_CONFIRMATION"] }, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } } }),
+    db.event.count({ where: { startsAt: { gte: now }, canceled: false, readinessStatus: "READY", ...launchIncludedEventWhere } }),
+    db.event.count({ where: { startsAt: { gte: now }, canceled: false, readinessStatus: { in: ["AT_RISK", "INCOMPLETE", "CHANGED_SINCE_CONFIRMATION"] }, ...launchIncludedEventWhere } }),
     getOperationOverview(),
   ]);
 
@@ -85,8 +87,9 @@ export default async function Dashboard() {
 
       <h2>Next planned actions</h2>
       <table>
+        <thead><tr><th>When</th><th>Contractor</th><th>Wedding</th><th>Communication</th><th>Status</th></tr></thead>
         <tbody>
-          {actions.map(action => <tr key={action.id}><td>{action.scheduledFor.toLocaleString()}</td><td>{action.person?.displayName}</td><td>{action.event?.name}</td><td>{action.channel}</td><td>{action.status}</td></tr>)}
+          {actions.map(action => <tr key={action.id}><td>{action.scheduledFor.toLocaleString()}</td><td>{action.person?.displayName}</td><td>{action.event?.name}</td><td><span className="pill">{communicationChannelLabel(action.channel)}</span></td><td>{action.status}</td></tr>)}
         </tbody>
       </table>
 
