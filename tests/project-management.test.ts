@@ -7,6 +7,7 @@ import { groupEventsForBrief, projectManagerNotificationKey } from "@/services/p
 import { hasPermission } from "@/lib/permissions";
 import { classifyProjectManagerQuestion, projectManagerToolNames } from "@/lib/project-manager-agent";
 import { isVscoTaskWebhookAuthorized } from "@/lib/vsco-task-webhook";
+import { assignmentIsInsideLaunchExclusion, contractorLaunchEligibility } from "@/services/go-live";
 
 const base = (overrides: Partial<ReadinessInput> = {}): ReadinessInput => ({
   canceled: false,
@@ -105,5 +106,18 @@ describe("project-manager acceptance", () => {
     const result = evaluateReadiness(base({ daysUntilEvent: 2, assignments }));
     expect(result.status).toBe("AT_RISK");
     expect(result.reasons.join(" ")).toMatch(/within 3 days/i);
+  });
+
+  it("excludes only assignments less than seven days away at launch", () => {
+    const now = new Date("2026-07-30T09:00:00-06:00");
+    expect(assignmentIsInsideLaunchExclusion(new Date("2026-08-05T09:00:00-06:00"), now)).toBe(true);
+    expect(assignmentIsInsideLaunchExclusion(new Date("2026-08-06T09:00:00-06:00"), now)).toBe(false);
+  });
+
+  it("uses only active SMS-eligible contractor profile numbers for launch", () => {
+    expect(contractorLaunchEligibility({ active: true, paused: false, smsEligible: true, phone: "+17035550123" }).eligible).toBe(true);
+    expect(contractorLaunchEligibility({ active: true, paused: false, smsEligible: false, phone: "+17035550123" }).eligible).toBe(false);
+    expect(contractorLaunchEligibility({ active: false, paused: false, smsEligible: true, phone: "+17035550123" }).eligible).toBe(false);
+    expect(contractorLaunchEligibility({ active: true, paused: false, smsEligible: true, phone: null }).eligible).toBe(false);
   });
 });

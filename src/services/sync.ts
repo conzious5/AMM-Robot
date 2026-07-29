@@ -6,6 +6,7 @@ import { env } from "@/lib/env";
 import { planAssignmentReminders } from "@/lib/reminders";
 import { VscoWorkspaceProvider } from "@/providers/vsco";
 import { notifyProjectManagers } from "@/services/project-manager";
+import { notifySystemDeveloper } from "@/services/developer-alerts";
 
 const assignmentRole = (role: string) => role.toLowerCase().includes("video") ? "VIDEOGRAPHER" as const : role.toLowerCase().includes("photo") ? "PHOTOGRAPHER" as const : "OTHER" as const;
 const removedPersonNames = new Set(["danielle tolson", "seth smith"]);
@@ -181,6 +182,11 @@ export async function reconcileVscoSyncFailureAlert() {
     subject: "Urgent: VSCO synchronization is repeatedly failing",
     body: `${alert.reason}.\n\n${alert.recommendedAction}`,
     deduplicationKey: `alert:${alert.id}:${alert.firstSeenAt.toISOString()}`,
+  });
+  await notifySystemDeveloper({
+    key: incidentKey,
+    subject: "AMM Robot issue: VSCO synchronization is repeatedly failing",
+    body: `${alert.reason}.\n\n${alert.recommendedAction}\n\nLatest error: ${failures.at(-1)?.errorSummary ?? "No error detail was recorded."}`,
   });
   return alert;
 }

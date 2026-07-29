@@ -20,6 +20,7 @@ const schema = z.object({
   PROJECT_MANAGER_PASSWORD_B64: z.string().min(16).optional(),
   PROJECT_MANAGER_DAILY_BRIEF_ENABLED: z.string().default("true").transform(v => v === "true"),
   PROJECT_MANAGER_DAILY_BRIEF_TIME: z.string().regex(/^\d{2}:\d{2}$/).default("08:00"),
+  SYSTEM_DEV_EMAIL: z.string().email().optional(),
   VSCO_API_BASE_URL: z.string().url().default("https://workspace.vsco.co/api/v2"),
   VSCO_API_KEY: z.string().optional(),
   VSCO_EVENTS_PATH: z.string().optional(),

@@ -17,6 +17,16 @@ export async function sendPlannedAction(actionId: string) {
       return tx.plannedAction.update({ where: { id: action.id }, data: { status: "SUPPRESSED", lastError: "Recipient or assignment is ineligible" } });
     }
     const config = env();
+    if (!config.TEST_MODE) {
+      const launch = await tx.setting.findUnique({ where: { key: "production-launch" } });
+      const launchState = launch?.value as { status?: string } | null;
+      if (launchState?.status !== "LIVE") {
+        return tx.plannedAction.update({
+          where: { id: action.id },
+          data: { status: "PLANNED", jobQueueId: null, lastError: "Production send held until the prepared launch is activated" },
+        });
+      }
+    }
     if (config.GLOBAL_COMMUNICATIONS_PAUSED || person.paused || assignment?.paused || assignment?.event.paused) {
       return tx.plannedAction.update({ where: { id: action.id }, data: { status: "SUPPRESSED", lastError: "Communications paused" } });
     }
@@ -25,6 +35,7 @@ export async function sendPlannedAction(actionId: string) {
       : null;
     const url = token ? `${config.APP_URL}/confirm/${token}` : "";
     let body = action.messagePreview.replace("[secure confirmation link]", url);
+    const optOutAcknowledgment = action.type === "AGENT_REPLY" && /^You have been opted out\b/i.test(body);
     if (action.channel === "SMS" && action.type === "REMINDER" && assignment) {
       const menuAlreadySent = await tx.message.findFirst({
         where: {
@@ -67,7 +78,7 @@ export async function sendPlannedAction(actionId: string) {
       if (result.error || !result.data) throw new Error(result.error?.message ?? "Resend rejected message");
       providerId = result.data.id;
     } else if (action.channel === "SMS") {
-      if (!person.smsEligible || !person.phone) throw new Error("SMS recipient is unavailable");
+      if ((!person.smsEligible && !optOutAcknowledgment) || !person.phone) throw new Error("SMS recipient is unavailable");
       recipient = config.TEST_MODE ? config.TEST_SMS_RECIPIENT ?? "" : person.phone;
       if (!recipient) throw new Error("Test SMS recipient is not configured");
       const prefix = config.TEST_MODE ? `[TEST for ${person.phone}] ` : "";

@@ -57,6 +57,7 @@ See [.env.example](.env.example). Provider credentials are server-only. Importan
 - `QUO_PHONE_NUMBER` and `QUO_PHONE_NUMBER_ID` select the existing sender; no number is hardcoded.
 - `PROJECT_MANAGER_NAME`, `PROJECT_MANAGER_EMAIL`, `PROJECT_MANAGER_PHONE`, `PROJECT_MANAGER_PASSWORD` (or `_B64`), `PROJECT_MANAGER_DAILY_BRIEF_ENABLED`, and `PROJECT_MANAGER_DAILY_BRIEF_TIME` can create Cylina during a seed. Leaving contact fields blank is safe; an owner/admin can invite or update the project manager from Settings.
 - `VSCO_TASK_WEBHOOK_SECRET` protects the VSCO task-event fallback. It must be at least 24 random characters and is never displayed in the dashboard.
+- `SYSTEM_DEV_EMAIL` receives deduplicated production issue alerts for exhausted communication jobs, webhook-processing failures, failed/bounced delivery events, and repeated VSCO synchronization failures.
 
 ## Project-manager operations
 
@@ -67,6 +68,18 @@ Required staffing is configured by event/job type in Settings. An event is ready
 Project managers have operational access but cannot view raw secrets, modify authentication/security controls, delete audit history or records, or enable production communication. Consequential changes use explicit controls, permission checks, audit records, and idempotency keys.
 
 The sync cycle recalculates readiness and sends deduplicated alerts for new blockers and readiness transitions. Each configured project manager can choose email, SMS, or both for alerts and set a daily brief time. The daily email emphasizes the next 7 days while summarizing the next 30 days, recent readiness, declines/conflicts, failed delivery, upcoming reminders, overdue critical tasks, and recommended actions.
+
+### Controlled production launch
+
+Settings includes an owner-only, idempotent production-launch preparation control. Preparation must run while `TEST_MODE=true` and does not contact anyone. It:
+
+- creates one introduction text per active, unpaused, SMS-eligible contractor profile with a valid phone number;
+- excludes inactive, removed, paused, opted-out, and missing-phone profiles;
+- suppresses reminder assignments whose events are less than seven exact days away at launch;
+- preserves the normal sequential reminder program for later events;
+- schedules introductions before reminders and removes stale queued jobs.
+
+After the plan is prepared, change Railway `TEST_MODE=false` and redeploy. Contractor delivery remains blocked at the message layer until a scheduled reconciliation changes the prepared launch state to `LIVE`. The system then queues the introduction campaign, starts eligible reminder sequences, retains STOP/START compliance, records provider delivery events, and emails the configured system developer when an operational failure exhausts retries.
 
 ## VSCO Workspace
 

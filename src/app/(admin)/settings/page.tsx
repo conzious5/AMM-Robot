@@ -9,6 +9,7 @@ import { requireAdmin } from "@/lib/auth";
 import { assertPermission } from "@/lib/permissions";
 import { inspectVscoTaskCapabilities, refreshCalculatedTaskStatuses } from "@/services/tasks";
 import { reconcileAllEventReadiness } from "@/services/readiness";
+import { getProductionLaunchState, prepareProductionLaunch } from "@/services/go-live";
 
 async function update(data: FormData) {
   "use server";
@@ -84,6 +85,14 @@ async function sync() {
   revalidatePath("/settings");
 }
 
+async function prepareLaunch() {
+  "use server";
+  const admin = await requireAdmin();
+  assertPermission(admin, "production:enable");
+  await prepareProductionLaunch(admin.id);
+  revalidatePath("/settings");
+}
+
 async function sendTest(data: FormData) {
   "use server";
   const channel = String(data.get("channel")) === "EMAIL" ? "EMAIL" : "SMS";
@@ -99,12 +108,13 @@ async function sendTest(data: FormData) {
 export default async function Page({ searchParams }: { searchParams: Promise<{ test?: string }> }) {
   const { test } = await searchParams;
   const config = env();
-  const [policies, syncRun, managers, roleRules, capabilities] = await Promise.all([
+  const [policies, syncRun, managers, roleRules, capabilities, launchState] = await Promise.all([
     db.reminderPolicy.findMany({ orderBy: { attemptNumber: "asc" } }),
     db.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     db.administrator.findMany({ where: { role: "PROJECT_MANAGER" }, orderBy: { name: "asc" } }),
     db.requiredRoleRule.findMany({ orderBy: [{ jobType: "asc" }, { role: "asc" }] }),
     db.providerCapability.findMany({ where: { provider: "VSCO" }, orderBy: { capability: "asc" } }),
+    getProductionLaunchState(),
   ]);
   const admin = await requireAdmin();
   const testReady = Boolean(
@@ -144,6 +154,22 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
           </form>
         </div>
       </section>
+      <h2>Production launch</h2>
+      <div className="card">
+        <p>Status: <b>{launchState?.status ?? "Not prepared"}</b></p>
+        {launchState && <>
+          <p>Contractor introductions: {launchState.eligibleContractors} eligible · {launchState.skippedContractors} skipped</p>
+          <p>Reminder assignments: {launchState.eligibleAssignments} continuing · {launchState.suppressedAssignments} suppressed inside 7 days</p>
+          <p>Introduction start: {new Date(launchState.introStart).toLocaleString()}</p>
+          <p>Reminder start: {new Date(launchState.reminderStart).toLocaleString()}</p>
+        </>}
+        {!launchState && admin.role === "OWNER" && config.TEST_MODE && (
+          <form action={prepareLaunch}>
+            <button>Prepare one-time production launch</button>
+          </form>
+        )}
+        <p className="muted">Preparation is idempotent and does not send while test mode is enabled. Production delivery remains blocked until the prepared plan is activated after Railway test mode is disabled.</p>
+      </div>
       <h2>Project manager</h2>
       {managers.map(manager => (
         <form action={saveProjectManager} className="card settings-form" key={manager.id}>
