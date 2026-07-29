@@ -1,2 +1,25 @@
-import { NextResponse } from "next/server"; import { env } from "@/lib/env"; import { verifyHmac } from "@/lib/crypto"; import { db } from "@/lib/db"; import { webhooksQueue } from "@/lib/queue";
-export async function POST(req:Request){const raw=await req.text(),signature=req.headers.get("openphone-signature")??req.headers.get("x-quo-signature")??"",secret=env().QUO_WEBHOOK_SIGNING_KEY;if(!secret||!verifyHmac(raw,signature,secret))return new NextResponse("Invalid signature",{status:401});const body=JSON.parse(raw) as {id?:string;type?:string};if(!body.id)return new NextResponse("Missing event ID",{status:400});const row=await db.webhookEvent.upsert({where:{provider_providerEventId:{provider:"QUO",providerEventId:body.id}},update:{},create:{provider:"QUO",providerEventId:body.id,type:body.type??"unknown",payload:body as object}});if(row.status==="QUEUED")await webhooksQueue.add("quo",{webhookEventId:row.id},{jobId:`quo-${body.id}`});return NextResponse.json({received:true},{status:202})}
+import { NextResponse } from "next/server";
+import { env } from "@/lib/env";
+import { verifyQuoWebhook } from "@/lib/crypto";
+import { db } from "@/lib/db";
+import { webhooksQueue } from "@/lib/queue";
+
+export async function POST(req: Request) {
+  const raw = await req.text();
+  const signature = req.headers.get("openphone-signature") ?? "";
+  const secret = env().QUO_WEBHOOK_SIGNING_KEY;
+  if (!secret || !verifyQuoWebhook(raw, signature, secret)) {
+    return new NextResponse("Invalid signature", { status: 401 });
+  }
+  const body = JSON.parse(raw) as { id?: string; type?: string };
+  if (!body.id) return new NextResponse("Missing event ID", { status: 400 });
+  const row = await db.webhookEvent.upsert({
+    where: { provider_providerEventId: { provider: "QUO", providerEventId: body.id } },
+    update: {},
+    create: { provider: "QUO", providerEventId: body.id, type: body.type ?? "unknown", payload: body as object },
+  });
+  if (row.status === "QUEUED") {
+    await webhooksQueue.add("quo", { webhookEventId: row.id }, { jobId: `quo-${body.id}` });
+  }
+  return NextResponse.json({ received: true }, { status: 202 });
+}

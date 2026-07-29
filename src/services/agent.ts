@@ -1,12 +1,16 @@
 import OpenAI from "openai";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
+import { isFinancialQuestion } from "@/services/inbound";
 
 export async function getPersonSchedule(personId: string, start: Date, end: Date) {
   return db.assignment.findMany({ where: { personId, active: true, event: { startsAt: { gte: start, lte: end }, canceled: false } }, select: { id: true, role: true, confirmationStatus: true, event: { select: { name: true, startsAt: true, endsAt: true, timezone: true, venueName: true, address: true } } }, orderBy: { event: { startsAt: "asc" } } });
 }
 export async function answerScheduleQuestion(personId: string, text: string) {
   const config = env();
+  if (isFinancialQuestion(text)) {
+    return "For privacy and security, this number cannot access or share pay, rates, invoices, billing, contracts, or other financial information. Please contact Authentic Moments administration directly.";
+  }
   if (!config.OPENAI_API_KEY) return "I could not interpret that automatically. An administrator will review your question.";
   const person = await db.person.findUniqueOrThrow({ where: { id: personId } });
   const tools: OpenAI.Responses.Tool[] = [{
@@ -14,7 +18,16 @@ export async function answerScheduleQuestion(personId: string, text: string) {
     parameters: { type: "object", properties: { start: { type: "string", description: "ISO date" }, end: { type: "string", description: "ISO date" } }, required: ["start", "end"], additionalProperties: false }, strict: true,
   }];
   const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
-  const first = await client.responses.create({ model: config.OPENAI_MODEL, store: false, instructions: `You are Authentic Moments scheduling. Today is ${new Date().toISOString()}. Sender is ${person.displayName}. Answer briefly. Never invent details. Use tools for all schedule facts. Missing data must be stated.`, input: text, tools });
+  const first = await client.responses.create({
+    model: config.OPENAI_MODEL,
+    store: false,
+    instructions: `You are the Authentic Moments contractor scheduling assistant. Today is ${new Date().toISOString()}. Sender is ${person.displayName}.
+Answer only questions about this sender's active ceremony assignments using the scheduling tool. Allowed facts are event name, assigned role, confirmation status, date, start/end time, timezone, venue, and address.
+Never reveal or discuss pay, rates, compensation, pricing, fees, invoices, billing, taxes, contract amounts, client financial information, raw CRM records, or another contractor's information. If asked, say financial information is unavailable by text and direct them to Authentic Moments administration.
+Never invent details. Clearly say when a field is unavailable in VSCO. Keep SMS replies concise.`,
+    input: text,
+    tools,
+  });
   const outputs: OpenAI.Responses.ResponseInputItem[] = [];
   const calls = [];
   for (const item of first.output) if (item.type === "function_call" && item.name === "get_person_schedule") {

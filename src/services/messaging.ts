@@ -2,6 +2,7 @@ import { Resend } from "resend";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { issueConfirmationToken } from "@/lib/confirmation";
+import { helpMenu } from "@/services/inbound";
 
 const logoUrl = "https://authentic-moments.com/wp-content/uploads/2023/12/Authentic-Moments-Website-Logo-v3.png";
 
@@ -20,7 +21,19 @@ export async function sendPlannedAction(actionId: string) {
     }
     const token = assignment ? await issueConfirmationToken(assignment.id) : null;
     const url = token ? `${config.APP_URL}/confirm/${token}` : "";
-    const body = action.messagePreview.replace("[secure confirmation link]", url);
+    let body = action.messagePreview.replace("[secure confirmation link]", url);
+    if (action.channel === "SMS" && action.type === "REMINDER" && assignment) {
+      const menuAlreadySent = await tx.message.findFirst({
+        where: {
+          personId: person.id,
+          channel: "SMS",
+          direction: "OUTBOUND",
+          textContent: { contains: "SCHEDULE — upcoming ceremony dates" },
+        },
+        select: { id: true },
+      });
+      if (!menuAlreadySent) body = `${body}\n\n${helpMenu}`;
+    }
     const conversation = await tx.conversation.upsert({ where: { personId_channel: { personId: person.id, channel: action.channel } }, update: { lastMessageAt: new Date() }, create: { personId: person.id, channel: action.channel } });
     let providerId: string;
     let recipient: string;

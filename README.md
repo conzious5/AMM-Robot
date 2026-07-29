@@ -77,7 +77,7 @@ The handler verifies the unmodified body with Resend/Svix headers and stores pro
 
 Create an API key and webhook signing key in Quo (formerly OpenPhone). Configure inbound message and delivery events at `https://YOUR_DOMAIN/api/webhooks/quo`, then set `QUO_API_KEY`, `QUO_PHONE_NUMBER`, `QUO_PHONE_NUMBER_ID`, and `QUO_WEBHOOK_SIGNING_KEY`. Signature verification uses the unmodified request body. Confirm the signature header and encoding against the version of Quo’s webhook documentation enabled for the account before production activation.
 
-STOP, START, HELP, CONFIRM, and DECLINE are processed deterministically before any model call. E.164 identities are never merged by similar name.
+STOP, START, HELP, CONFIRM, DECLINE, SCHEDULE, DETAILS, LOCATION, and HOURS are processed deterministically before any model call. The first reminder text includes the help menu once per contractor. Financial questions are blocked before database or model lookup; the scheduling tools expose only the identified contractor's whitelisted ceremony fields. E.164 identities are never merged by similar name.
 
 ## OpenAI
 

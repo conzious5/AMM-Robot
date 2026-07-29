@@ -20,7 +20,13 @@ const webhookWorker = new Worker("webhooks", async job => {
       if (!senderRaw || !text) throw new Error("Quo inbound payload lacks sender or content");
       const phone = parsePhoneNumber(String(senderRaw), "US").number;
       const person = await db.person.findUnique({ where: { phone } });
-      if (!person) throw new Error("No person matches inbound phone number");
+      if (!person) {
+        await db.webhookEvent.update({
+          where: { id: event.id },
+          data: { status: "COMPLETED", processedAt: new Date(), error: "Ignored: no contractor matches inbound phone number" },
+        });
+        return;
+      }
       const conversation = await db.conversation.upsert({ where: { personId_channel: { personId: person.id, channel: "SMS" } }, update: { lastMessageAt: new Date() }, create: { personId: person.id, channel: "SMS" } });
       await db.message.upsert({ where: { providerMessageId: String(data.id) }, update: {}, create: { conversationId: conversation.id, personId: person.id, direction: "INBOUND", channel: "SMS", provider: "QUO", providerMessageId: String(data.id), sender: phone, recipient: String(data.to ?? ""), textContent: String(text), deliveryStatus: "RECEIVED", authorType: "CONTRACTOR", receivedAt: new Date(), rawProviderPayload: data } });
       const deterministic = await handleDeterministic(person.id, String(text), "SMS");
