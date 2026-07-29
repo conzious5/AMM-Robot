@@ -8,8 +8,44 @@ import { answerScheduleQuestion } from "@/services/agent";
 import { parsePhoneNumber } from "libphonenumber-js";
 import { notifyProjectManagers } from "@/services/project-manager";
 import { notifySystemDeveloper } from "@/services/developer-alerts";
+import { env } from "@/lib/env";
 
 const worker = new Worker("planned-actions", async job => sendPlannedAction(job.data.actionId as string), { connection, concurrency: 10 });
+
+async function resolveInboundSmsPerson(senderRaw: string) {
+  const phone = parsePhoneNumber(String(senderRaw), "US").number;
+  const direct = await db.person.findUnique({ where: { phone } });
+  if (direct) return { person: direct, phone, testAlias: false };
+
+  const config = env();
+  if (!config.TEST_MODE || !config.TEST_SMS_RECIPIENT) return { person: null, phone, testAlias: false };
+  const testPhone = parsePhoneNumber(config.TEST_SMS_RECIPIENT, "US").number;
+  if (testPhone !== phone) return { person: null, phone, testAlias: false };
+
+  const latestTestMessage = await db.message.findFirst({
+    where: {
+      direction: "OUTBOUND",
+      channel: "SMS",
+      provider: "QUO",
+      recipient: phone,
+    },
+    orderBy: { createdAt: "desc" },
+    select: { personId: true },
+  });
+  const person = latestTestMessage?.personId
+    ? await db.person.findUnique({ where: { id: latestTestMessage.personId } })
+    : null;
+  return { person, phone, testAlias: Boolean(person) };
+}
+
+function dryRunTestReply(intent: ReturnType<typeof deterministicIntent>) {
+  if (intent === "STOP") return "[TEST] STOP was recognized. No contractor was opted out.";
+  if (intent === "START") return "[TEST] START was recognized. No contractor opt-in status was changed.";
+  if (intent === "CONFIRM") return "[TEST] CONFIRM was recognized. No assignment was changed.";
+  if (intent === "DECLINE") return "[TEST] DECLINE was recognized. No assignment was changed.";
+  return null;
+}
+
 const webhookWorker = new Worker("webhooks", async job => {
   const event = await db.webhookEvent.findUniqueOrThrow({ where: { id: job.data.webhookEventId as string } });
   if (event.status === "COMPLETED") return;
@@ -55,8 +91,7 @@ const webhookWorker = new Worker("webhooks", async job => {
       const senderRaw = data.from ?? data.sender?.phoneNumber ?? data.phoneNumber;
       const text = data.text ?? data.content ?? data.body;
       if (!senderRaw || !text) throw new Error("Quo inbound payload lacks sender or content");
-      const phone = parsePhoneNumber(String(senderRaw), "US").number;
-      const person = await db.person.findUnique({ where: { phone } });
+      const { person, phone, testAlias } = await resolveInboundSmsPerson(String(senderRaw));
       if (!person) {
         await db.webhookEvent.update({
           where: { id: event.id },
@@ -66,8 +101,9 @@ const webhookWorker = new Worker("webhooks", async job => {
       }
       const conversation = await db.conversation.upsert({ where: { personId_channel: { personId: person.id, channel: "SMS" } }, update: { lastMessageAt: new Date() }, create: { personId: person.id, channel: "SMS" } });
       await db.message.upsert({ where: { providerMessageId: String(data.id) }, update: {}, create: { conversationId: conversation.id, personId: person.id, direction: "INBOUND", channel: "SMS", provider: "QUO", providerMessageId: String(data.id), sender: phone, recipient: String(data.to ?? ""), textContent: String(text), deliveryStatus: "RECEIVED", authorType: "CONTRACTOR", receivedAt: new Date(), rawProviderPayload: data } });
-      const deterministic = await handleDeterministic(person.id, String(text), "SMS");
-      if (/\b(conflict|double.booked|cannot work|can't work|unavailable)\b/i.test(String(text))) {
+      const intent = deterministicIntent(String(text));
+      const deterministic = (testAlias && dryRunTestReply(intent)) || await handleDeterministic(person.id, String(text), "SMS");
+      if (!testAlias && /\b(conflict|double.booked|cannot work|can't work|unavailable)\b/i.test(String(text))) {
         const key = `scheduling-conflict:${event.providerEventId}`;
         const conflictAlert = await db.operationalAlert.upsert({
           where: { deduplicationKey: key },
@@ -90,7 +126,7 @@ const webhookWorker = new Worker("webhooks", async job => {
         });
       }
       const reply = deterministic ?? await answerScheduleQuestion(person.id, String(text));
-      const action = await db.plannedAction.create({ data: { type: "AGENT_REPLY", personId: person.id, channel: "SMS", scheduledFor: new Date(), status: "PLANNED", reason: deterministicIntent(String(text)) === "NATURAL_LANGUAGE" ? "Scheduling agent reply" : "Deterministic compliance/confirmation reply", messagePreview: reply, idempotencyKey: `reply:quo:${event.providerEventId}` } });
+      const action = await db.plannedAction.create({ data: { type: "AGENT_REPLY", personId: person.id, channel: "SMS", scheduledFor: new Date(), status: "PLANNED", reason: intent === "NATURAL_LANGUAGE" ? "Scheduling agent reply" : "Deterministic compliance/confirmation reply", messagePreview: reply, idempotencyKey: `reply:quo:${event.providerEventId}` } });
       await sendPlannedAction(action.id);
     } else if (event.provider === "QUO") {
       const data = payload.data?.object ?? payload.data ?? payload;

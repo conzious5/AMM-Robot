@@ -1,6 +1,6 @@
 import { addDays } from "date-fns";
 import { Prisma } from "@prisma/client";
-import { parsePhoneNumber } from "libphonenumber-js";
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { planAssignmentReminders } from "@/lib/reminders";
@@ -68,7 +68,8 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
               continue;
             }
             const email = member.email?.trim().toLowerCase();
-            const phone = member.phone ? parsePhoneNumber(member.phone, "US").number : undefined;
+            const parsedPhone = member.phone ? parsePhoneNumberFromString(member.phone, "US") : undefined;
+            const phone = parsedPhone?.isValid() ? parsedPhone.number : undefined;
             let person = member.id ? await db.person.findUnique({ where: { vscoExternalId: member.id } }) : null;
             if (!person && email) person = await db.person.findUnique({ where: { normalizedEmail: email } });
             if (!person && phone) person = await db.person.findUnique({ where: { phone } });

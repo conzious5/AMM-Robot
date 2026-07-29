@@ -119,5 +119,6 @@ describe("project-manager acceptance", () => {
     expect(contractorLaunchEligibility({ active: true, paused: false, smsEligible: false, phone: "+17035550123" }).eligible).toBe(false);
     expect(contractorLaunchEligibility({ active: false, paused: false, smsEligible: true, phone: "+17035550123" }).eligible).toBe(false);
     expect(contractorLaunchEligibility({ active: true, paused: false, smsEligible: true, phone: null }).eligible).toBe(false);
+    expect(contractorLaunchEligibility({ active: true, paused: false, smsEligible: true, phone: "123" })).toEqual({ eligible: false, reason: "invalid phone" });
   });
 });

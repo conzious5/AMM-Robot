@@ -1,4 +1,5 @@
 import { addMinutes } from "date-fns";
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { actionsQueue } from "@/lib/queue";
@@ -32,6 +33,8 @@ export function contractorLaunchEligibility(person: {
   if (!person.smsEligible) return { eligible: false, reason: "SMS ineligible or opted out" };
   if (!person.phone) return { eligible: false, reason: "missing phone" };
   if (person.notes?.includes("[DO_NOT_CONTACT_REMOVED]")) return { eligible: false, reason: "do not contact" };
+  const parsedPhone = parsePhoneNumberFromString(person.phone, "US");
+  if (!parsedPhone?.isValid()) return { eligible: false, reason: "invalid phone" };
   return { eligible: true, reason: null };
 }
 
