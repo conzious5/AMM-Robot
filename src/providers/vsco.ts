@@ -44,6 +44,8 @@ export function normalizeVscoEvent(input: unknown): NormalizedVscoEvent {
 export class VscoWorkspaceProvider {
   private readonly contacts = new Map<string, z.infer<typeof OfficialContact>>();
   private readonly roles = new Map<string, z.infer<typeof OfficialJobRole>>();
+  private readonly jobContacts = new Map<string, z.infer<typeof OfficialJobContact>[]>();
+  private assignmentsLoaded = false;
 
   async *events(params: { from: Date; to: Date; cursor?: string }) {
     const cfg = env();
@@ -88,15 +90,16 @@ export class VscoWorkspaceProvider {
   }
 
   private async assignments(jobId: string) {
-    const body = await this.collection("/job-contact", { jobId });
+    await this.loadAssignmentData();
     const assignments: z.infer<typeof Assignment>[] = [];
-    for (const input of body.items) {
-      const link = OfficialJobContact.parse(input);
+    for (const link of this.jobContacts.get(jobId) ?? []) {
       if (!link.roleKinds.includes("team")) continue;
-      const contact = await this.contact(link.contactId);
+      const contact = this.contacts.get(link.contactId);
+      if (!contact) continue;
       for (const roleId of link.jobRoles) {
         if (!roleId) continue;
-        const role = await this.role(roleId);
+        const role = this.roles.get(roleId);
+        if (!role) continue;
         if (role.kind !== "team") continue;
         assignments.push({
           id: `${link.id}:${role.id}`,
@@ -115,7 +118,32 @@ export class VscoWorkspaceProvider {
     return assignments;
   }
 
-  private async collection(path: string, params: Record<string, string>) {
+  private async loadAssignmentData() {
+    if (this.assignmentsLoaded) return;
+    const [links, contacts, roles] = await Promise.all([
+      this.collection("/job-contact"),
+      this.collection("/address-book"),
+      this.collection("/job-role"),
+    ]);
+    for (const input of contacts.items) {
+      const parsed = OfficialContact.safeParse(input);
+      if (parsed.success) this.contacts.set(parsed.data.id, parsed.data);
+    }
+    for (const input of roles.items) {
+      const parsed = OfficialJobRole.safeParse(input);
+      if (parsed.success) this.roles.set(parsed.data.id, parsed.data);
+    }
+    for (const input of links.items) {
+      const parsed = OfficialJobContact.safeParse(input);
+      if (!parsed.success) continue;
+      const group = this.jobContacts.get(parsed.data.jobId) ?? [];
+      group.push(parsed.data);
+      this.jobContacts.set(parsed.data.jobId, group);
+    }
+    this.assignmentsLoaded = true;
+  }
+
+  private async collection(path: string, params: Record<string, string> = {}) {
     const all: unknown[] = [];
     let page = 1;
     let totalPages = 1;
@@ -132,22 +160,6 @@ export class VscoWorkspaceProvider {
     return { items: all };
   }
 
-  private async contact(id: string) {
-    const cached = this.contacts.get(id);
-    if (cached) return cached;
-    const contact = OfficialContact.parse(await (await this.request(this.url(`/address-book/${id}`))).json());
-    this.contacts.set(id, contact);
-    return contact;
-  }
-
-  private async role(id: string) {
-    const cached = this.roles.get(id);
-    if (cached) return cached;
-    const role = OfficialJobRole.parse(await (await this.request(this.url(`/job-role/${id}`))).json());
-    this.roles.set(id, role);
-    return role;
-  }
-
   private url(path: string) {
     return new URL(path.replace(/^\//, ""), `${env().VSCO_API_BASE_URL.replace(/\/?$/, "/")}`);
   }
@@ -159,7 +171,11 @@ export class VscoWorkspaceProvider {
       if (response.ok) return response;
       if (![429, 500, 502, 503, 504].includes(response.status)) throw new Error(`VSCO request failed (${response.status})`);
       error = new Error(`Temporary VSCO failure (${response.status})`);
-      await new Promise(resolve => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 15000)));
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const delay = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 60000)
+        : Math.min(1000 * 2 ** attempt, 15000);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
     throw error;
   }
@@ -199,6 +215,7 @@ const OfficialEvent = z.object({
 const OfficialJobContact = z.object({
   id: z.string(),
   contactId: z.string(),
+  jobId: z.string(),
   jobRoles: z.array(z.string().nullable()).nullable().default([]).transform(value => value ?? []),
   roleKinds: z.array(z.string()).default([]),
 }).passthrough();
