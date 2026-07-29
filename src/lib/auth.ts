@@ -9,14 +9,17 @@ const key = () => new TextEncoder().encode(env().AUTH_SECRET);
 export async function signIn(email: string, password: string) {
   const config = env();
   const normalizedEmail = email.toLowerCase();
-  const admin = config.ADMIN_EMAIL && normalizedEmail === config.ADMIN_EMAIL.toLowerCase()
-    ? await db.administrator.findFirst({ where: { role: "OWNER", active: true }, orderBy: { createdAt: "asc" } })
-    : await db.administrator.findUnique({ where: { email: normalizedEmail } });
   const configuredPassword = config.ADMIN_PASSWORD_B64
     ? Buffer.from(config.ADMIN_PASSWORD_B64, "base64").toString("utf8")
     : config.ADMIN_PASSWORD;
-  const validPassword = configuredPassword
+  const configuredPasswordMatches = configuredPassword
     ? password === configuredPassword
+    : false;
+  const admin = configuredPasswordMatches
+    ? await db.administrator.findFirst({ where: { role: "OWNER", active: true }, orderBy: { createdAt: "asc" } })
+    : await db.administrator.findUnique({ where: { email: normalizedEmail } });
+  const validPassword = configuredPassword
+    ? configuredPasswordMatches
     : admin
       ? await bcrypt.compare(password, admin.passwordHash)
       : false;
