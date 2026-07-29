@@ -225,7 +225,7 @@ export async function sendReminderPreview(channel: "EMAIL" | "SMS" | "BOTH" = "B
   if (errors.length) throw new Error(errors.join("; "));
 }
 
-function brandedEmailHtml({
+export function brandedEmailHtml({
   preheader,
   title,
   body,
@@ -236,7 +236,9 @@ function brandedEmailHtml({
   body: string;
   confirmationUrl?: string;
 }) {
-  const safeBody = escapeHtml(body).replaceAll("\n", "<br>");
+  const safeBody = escapeHtml(body)
+    .replace(/https:\/\/[^\s<]+/g, url => `<a href="${url}" style="color:#003566;font-weight:700">${url}</a>`)
+    .replaceAll("\n", "<br>");
   return `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
