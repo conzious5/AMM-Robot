@@ -1,8 +1,10 @@
 import Link from "next/link";
 import type { Administrator } from "@prisma/client";
 import { env } from "@/lib/env";
-const links = [["/","Dashboard"],["/operations","Operations"],["/events","Events"],["/people","People"],["/confirmations","Confirmations"],["/actions","Planned Actions"],["/conversations","Conversations"],["/logs","Logs"],["/settings","Settings"]];
+const administratorLinks = [["/","Dashboard"],["/operations","Operations"],["/events","Events"],["/people","People"],["/confirmations","Confirmations"],["/actions","Planned Actions"],["/conversations","Conversations"],["/logs","Logs"],["/guide","Guide"],["/settings","Settings"]];
+const projectManagerLinks = [["/","Dashboard"],["/operations","Operations"],["/events","Events"],["/people","People"],["/confirmations","Confirmations"],["/actions","Planned Actions"],["/conversations","Conversations"],["/guide","How to Use"],["/settings","My Settings"]];
 export function AdminShell({ children, admin }: { children: React.ReactNode; admin: Administrator }) {
+  const links = admin.role === "PROJECT_MANAGER" ? projectManagerLinks : administratorLinks;
   return <>
     {env().TEST_MODE && <div className="banner">TEST MODE — all outbound communication is redirected</div>}
     <nav>

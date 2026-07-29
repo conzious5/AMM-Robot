@@ -8,6 +8,7 @@ import { hasPermission } from "@/lib/permissions";
 import { classifyProjectManagerQuestion, projectManagerToolNames } from "@/lib/project-manager-agent";
 import { isVscoTaskWebhookAuthorized } from "@/lib/vsco-task-webhook";
 import { assignmentIsInsideLaunchExclusion, contractorLaunchEligibility } from "@/services/go-live";
+import { administratorInviteIsUsable, administratorInviteKey } from "@/lib/admin-invite";
 
 const base = (overrides: Partial<ReadinessInput> = {}): ReadinessInput => ({
   canceled: false,
@@ -60,6 +61,22 @@ describe("project-manager acceptance", () => {
   it("prevents project managers from changing security or production controls", () => {
     expect(hasPermission("PROJECT_MANAGER", "settings:security")).toBe(false);
     expect(hasPermission("PROJECT_MANAGER", "production:enable")).toBe(false);
+  });
+
+  it("stores administrator setup tokens only as stable hashes", () => {
+    expect(administratorInviteKey("one-time-secret")).toMatch(/^administrator-invite:[a-f0-9]{64}$/);
+    expect(administratorInviteKey("one-time-secret")).toBe(administratorInviteKey("one-time-secret"));
+    expect(administratorInviteKey("different-secret")).not.toBe(administratorInviteKey("one-time-secret"));
+  });
+
+  it("expires one-time administrator setup links", () => {
+    const value = {
+      administratorId: "cylina",
+      createdAt: "2026-07-29T18:00:00.000Z",
+      expiresAt: "2026-07-31T18:00:00.000Z",
+    };
+    expect(administratorInviteIsUsable(value, new Date("2026-07-30T18:00:00.000Z"))).toBe(true);
+    expect(administratorInviteIsUsable(value, new Date("2026-08-01T18:00:00.000Z"))).toBe(false);
   });
 
   it("allows project managers to resend and send communications", () => {

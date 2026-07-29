@@ -1,5 +1,6 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { sendReminderPreview } from "@/services/messaging";
@@ -70,13 +71,16 @@ async function saveRequiredRole(data: FormData) {
 
 async function inspectTasks() {
   "use server";
-  await requireAdmin();
+  const admin = await requireAdmin();
+  assertPermission(admin, "settings:security");
   await inspectVscoTaskCapabilities();
   revalidatePath("/settings");
 }
 
 async function sync() {
   "use server";
+  const admin = await requireAdmin();
+  assertPermission(admin, "settings:security");
   await runVscoSync();
   await reconcileVscoSyncFailureAlert();
   await inspectVscoTaskCapabilities();
@@ -95,6 +99,8 @@ async function prepareLaunch() {
 
 async function sendTest(data: FormData) {
   "use server";
+  const admin = await requireAdmin();
+  assertPermission(admin, "settings:security");
   const channel = String(data.get("channel")) === "EMAIL" ? "EMAIL" : "SMS";
   let result = `${channel.toLowerCase()}-sent`;
   try {
@@ -107,6 +113,37 @@ async function sendTest(data: FormData) {
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ test?: string }> }) {
   const { test } = await searchParams;
+  const admin = await requireAdmin();
+  if (admin.role === "PROJECT_MANAGER") {
+    return (
+      <>
+        <h1>My Settings</h1>
+        <p className="muted">Manage your AMM Robot login and notification preferences.</p>
+        <div className="card">
+          <h2>Need help?</h2>
+          <p>Review the project-manager workflow, safety checks, and daily routine.</p>
+          <Link className="button secondary" href="/guide">Open the project-manager guide</Link>
+        </div>
+        <h2>Account and notifications</h2>
+        <form action={saveProjectManager} className="card settings-form">
+          <input type="hidden" name="id" value={admin.id} />
+          <label>Name<input name="name" defaultValue={admin.name} required /></label>
+          <label>Notification email<input name="email" type="email" defaultValue={admin.email} required /></label>
+          <label>Notification phone<input name="phone" defaultValue={admin.phone ?? ""} /></label>
+          <label>Notification channel<select name="notificationChannel" defaultValue={admin.notificationChannel}><option value="EMAIL">Email</option><option value="SMS">SMS</option><option value="BOTH">Email and SMS</option></select></label>
+          <label>Daily brief time<input name="dailyBriefTime" type="time" defaultValue={admin.dailyBriefTime} /></label>
+          <label><input className="inline-input" type="checkbox" name="dailyBriefEnabled" defaultChecked={admin.dailyBriefEnabled} /> Daily brief enabled</label>
+          <label>New password (optional)<input name="password" type="password" minLength={12} autoComplete="new-password" /></label>
+          <button>Save my settings</button>
+        </form>
+        <div className="card">
+          <h2>Access boundaries</h2>
+          <p>You can manage staffing, confirmations, contractor communication, notes, milestones, and alerts.</p>
+          <p className="muted">Security secrets, production activation, record deletion, and audit deletion remain owner-only.</p>
+        </div>
+      </>
+    );
+  }
   const config = env();
   const [policies, syncRun, managers, roleRules, capabilities, launchState] = await Promise.all([
     db.reminderPolicy.findMany({ orderBy: { attemptNumber: "asc" } }),
@@ -116,7 +153,6 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
     db.providerCapability.findMany({ where: { provider: "VSCO" }, orderBy: { capability: "asc" } }),
     getProductionLaunchState(),
   ]);
-  const admin = await requireAdmin();
   const testReady = Boolean(
     config.TEST_MODE &&
     config.RESEND_API_KEY &&
@@ -184,19 +220,17 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
           <button>Save project manager</button>
         </form>
       ))}
-      {admin.role !== "PROJECT_MANAGER" && (
-        <form action={saveProjectManager} className="card settings-form">
-          <h3>Invite project manager</h3>
-          <label>Name<input name="name" defaultValue={config.PROJECT_MANAGER_NAME} required /></label>
-          <label>Email<input name="email" type="email" defaultValue={config.PROJECT_MANAGER_EMAIL ?? ""} required /></label>
-          <label>Phone<input name="phone" defaultValue={config.PROJECT_MANAGER_PHONE ?? ""} /></label>
-          <label>Notification channel<select name="notificationChannel" defaultValue="EMAIL"><option value="EMAIL">Email</option><option value="SMS">SMS</option><option value="BOTH">Email and SMS</option></select></label>
-          <label>Daily brief time<input name="dailyBriefTime" type="time" defaultValue={config.PROJECT_MANAGER_DAILY_BRIEF_TIME} /></label>
-          <label><input className="inline-input" type="checkbox" name="dailyBriefEnabled" defaultChecked={config.PROJECT_MANAGER_DAILY_BRIEF_ENABLED} /> Daily brief enabled</label>
-          <label>Temporary password<input name="password" type="password" minLength={12} required autoComplete="new-password" /></label>
-          <button>Create project-manager login</button>
-        </form>
-      )}
+      <form action={saveProjectManager} className="card settings-form">
+        <h3>Invite project manager</h3>
+        <label>Name<input name="name" defaultValue={config.PROJECT_MANAGER_NAME} required /></label>
+        <label>Email<input name="email" type="email" defaultValue={config.PROJECT_MANAGER_EMAIL ?? ""} required /></label>
+        <label>Phone<input name="phone" defaultValue={config.PROJECT_MANAGER_PHONE ?? ""} /></label>
+        <label>Notification channel<select name="notificationChannel" defaultValue="EMAIL"><option value="EMAIL">Email</option><option value="SMS">SMS</option><option value="BOTH">Email and SMS</option></select></label>
+        <label>Daily brief time<input name="dailyBriefTime" type="time" defaultValue={config.PROJECT_MANAGER_DAILY_BRIEF_TIME} /></label>
+        <label><input className="inline-input" type="checkbox" name="dailyBriefEnabled" defaultChecked={config.PROJECT_MANAGER_DAILY_BRIEF_ENABLED} /> Daily brief enabled</label>
+        <label>Temporary password<input name="password" type="password" minLength={12} required autoComplete="new-password" /></label>
+        <button>Create project-manager login</button>
+      </form>
       <h2>Required roles by job type</h2>
       <p className="muted">Readiness uses these rules; events without a matching rule are evaluated from their assigned production team without assuming every wedding has identical staffing.</p>
       {roleRules.map(rule => <div className="card" key={rule.id}>{rule.jobType} · {rule.role.toLowerCase()} · {rule.requiredCount} required · {rule.active ? "active" : "disabled"}</div>)}
