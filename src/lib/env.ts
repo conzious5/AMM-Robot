@@ -10,6 +10,7 @@ const schema = z.object({
   REDIS_URL: z.string().default("redis://localhost:6379"),
   AUTH_SECRET: z.string().min(32).optional(),
   ADMIN_EMAIL: z.string().email().optional(),
+  ADMIN_PASSWORD: z.string().min(12).optional(),
   ADMIN_PASSWORD_HASH: z.string().optional(),
   VSCO_API_BASE_URL: z.string().url().default("https://workspace.vsco.co/api/v2"),
   VSCO_API_KEY: z.string().optional(),
