@@ -129,13 +129,19 @@ export default async function Page({
 
       {visible.length ? (
         <DataTable
-          columns={["Event", "Date / venue", "Assignments", "Sync"]}
+          columns={["Event", "Date / venue", "Readiness", "Assignments", "Sync"]}
           rows={visible.map(event => [
             <b key="name">{event.name}</b>,
             <span key="date">
               {formatInTimeZone(event.startsAt, event.timezone, "MMM d, yyyy · h:mm a zzz")}
               <br />
               <span className="muted">{event.venueName ?? "Venue pending"}</span>
+            </span>,
+            <span key="readiness">
+              <span className="pill">{event.readinessStatus.replaceAll("_", " ")}</span>
+              {Array.isArray(event.readinessReasons) && event.readinessReasons.length > 0 && (
+                <><br /><span className="muted">{event.readinessReasons.map(String).slice(0, 2).join("; ")}</span></>
+              )}
             </span>,
             <span key="assignments">
               {event.assignments.map(assignment => (

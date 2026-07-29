@@ -20,7 +20,9 @@ export async function sendPlannedAction(actionId: string) {
     if (config.GLOBAL_COMMUNICATIONS_PAUSED || person.paused || assignment?.paused || assignment?.event.paused) {
       return tx.plannedAction.update({ where: { id: action.id }, data: { status: "SUPPRESSED", lastError: "Communications paused" } });
     }
-    const token = assignment ? await issueConfirmationToken(assignment.id) : null;
+    const token = assignment && ["REMINDER", "ESCALATE"].includes(action.type)
+      ? await issueConfirmationToken(assignment.id)
+      : null;
     const url = token ? `${config.APP_URL}/confirm/${token}` : "";
     let body = action.messagePreview.replace("[secure confirmation link]", url);
     if (action.channel === "SMS" && action.type === "REMINDER" && assignment) {
@@ -43,7 +45,10 @@ export async function sendPlannedAction(actionId: string) {
       recipient = config.TEST_MODE ? config.TEST_EMAIL_RECIPIENT ?? "" : person.email;
       if (!recipient) throw new Error("Test email recipient is not configured");
       const prefix = config.TEST_MODE ? `[TEST for ${person.email}] ` : "";
-      const subject = `${prefix}${action.subjectPreview ?? "Please confirm your assignment"}`;
+      const defaultSubject = ["REMINDER", "ESCALATE"].includes(action.type)
+        ? "Please confirm your assignment"
+        : "A message from Authentic Moments";
+      const subject = `${prefix}${action.subjectPreview ?? defaultSubject}`;
       const result = await new Resend(config.RESEND_API_KEY).emails.send({
         from: config.TEST_MODE ? "Authentic Moments Scheduling <onboarding@resend.dev>" : config.EMAIL_FROM,
         to: recipient, replyTo: config.EMAIL_REPLY_DOMAIN ? `reply+${conversation.id}@${config.EMAIL_REPLY_DOMAIN}` : undefined,
@@ -51,7 +56,9 @@ export async function sendPlannedAction(actionId: string) {
         text: `${prefix}${body}`,
         html: brandedEmailHtml({
           preheader: subject,
-          title: "Please confirm your assignment",
+          title: ["REMINDER", "ESCALATE"].includes(action.type)
+            ? "Please confirm your assignment"
+            : "A message from Authentic Moments",
           body: prefix + (url ? body.replaceAll(url, "").trim() : body),
           confirmationUrl: url,
         }),

@@ -1,5 +1,6 @@
 import { ConfirmationStatus } from "@prisma/client";
 import { db } from "@/lib/db";
+import { reconcileEventReadiness } from "@/services/readiness";
 
 const confirmWords = /^(confirm|confirmed|yes|yep|i(?:'|’)ll be there)[.! ]*$/i;
 const declineWords = /^(decline|cannot work|can't work|no)[.! ]*$/i;
@@ -78,6 +79,7 @@ export async function handleDeterministic(personId: string, text: string, channe
     db.plannedAction.updateMany({ where: { assignmentId: assignment.id, status: { in: ["PLANNED", "QUEUED"] } }, data: { status: "CANCELED", canceledAt: now } }),
     db.auditLog.create({ data: { actorType: "CONTRACTOR", actorId: personId, action: intent === "CONFIRM" ? "ASSIGNMENT_CONFIRMED" : "ASSIGNMENT_DECLINED", entityType: "Assignment", entityId: assignment.id, metadata: { channel } } }),
   ]);
+  await reconcileEventReadiness(assignment.eventId);
   return intent === "CONFIRM" ? `Confirmed — you are set for ${assignment.event.name} on ${assignment.event.startsAt.toLocaleDateString("en-US", { dateStyle: "long", timeZone: assignment.event.timezone })}.` : "Your decline was recorded and an administrator has been alerted.";
 }
 

@@ -12,27 +12,27 @@ export async function signIn(email: string, password: string) {
   const configuredPassword = config.ADMIN_PASSWORD_B64
     ? Buffer.from(config.ADMIN_PASSWORD_B64, "base64").toString("utf8")
     : config.ADMIN_PASSWORD;
-  const configuredPasswordMatches = configuredPassword
-    ? password === configuredPassword
-    : false;
-  let admin = configuredPasswordMatches
-    ? await db.administrator.findFirst({ where: { active: true }, orderBy: { createdAt: "asc" } })
-    : await db.administrator.findUnique({ where: { email: normalizedEmail } });
+  const configuredOwnerEmail = config.ADMIN_EMAIL?.toLowerCase();
+  const configuredPasswordMatches = Boolean(
+    configuredPassword &&
+    configuredOwnerEmail &&
+    normalizedEmail === configuredOwnerEmail &&
+    password === configuredPassword
+  );
+  let admin = await db.administrator.findUnique({ where: { email: normalizedEmail } });
   if (!admin && configuredPasswordMatches) {
     admin = await db.administrator.create({
       data: {
         name: "Authentic Moments Administrator",
-        email: (config.ADMIN_EMAIL || normalizedEmail).toLowerCase(),
+        email: normalizedEmail,
         passwordHash: await bcrypt.hash(configuredPassword!, 12),
         role: "OWNER",
       },
     });
   }
-  const validPassword = configuredPassword
-    ? configuredPasswordMatches
-    : admin
-      ? await bcrypt.compare(password, admin.passwordHash)
-      : false;
+  const validPassword = configuredPasswordMatches || Boolean(
+    admin && await bcrypt.compare(password, admin.passwordHash)
+  );
   if (!admin?.active || !validPassword) return false;
   const token = await new SignJWT({ sub: admin.id, role: admin.role }).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime("12h").sign(key());
   (await cookies()).set("amm_session", token, { httpOnly: true, secure: config.NODE_ENV === "production", sameSite: "lax", path: "/", maxAge: 43200 });

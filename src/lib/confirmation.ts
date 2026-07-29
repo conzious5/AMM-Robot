@@ -1,6 +1,7 @@
 import { Channel, ConfirmationStatus } from "@prisma/client";
 import { db } from "./db";
 import { createOpaqueToken, sha256 } from "./crypto";
+import { reconcileEventReadiness } from "@/services/readiness";
 
 export async function issueConfirmationToken(assignmentId: string, days = 45) {
   const { token, hash } = createOpaqueToken();
@@ -11,7 +12,7 @@ export async function getConfirmation(token: string) {
   return db.confirmationToken.findUnique({ where: { tokenHash: sha256(token) }, include: { assignment: { include: { person: true, event: true } } } });
 }
 export async function confirmWithToken(token: string) {
-  return db.$transaction(async tx => {
+  const assignment = await db.$transaction(async tx => {
     const record = await tx.confirmationToken.findUnique({ where: { tokenHash: sha256(token) }, include: { assignment: true } });
     if (!record || record.usedAt || record.revokedAt || record.expiresAt <= new Date()) throw new Error("This confirmation link is invalid or expired.");
     if (!record.assignment.active || record.assignment.confirmationStatus === ConfirmationStatus.CANCELED) throw new Error("This assignment is no longer active.");
@@ -22,4 +23,6 @@ export async function confirmWithToken(token: string) {
     await tx.auditLog.create({ data: { actorType: "CONTRACTOR", action: "ASSIGNMENT_CONFIRMED", entityType: "Assignment", entityId: assignment.id, after: { channel: "LINK", confirmedAt: now.toISOString() } } });
     return assignment;
   });
+  await reconcileEventReadiness(assignment.eventId);
+  return assignment;
 }

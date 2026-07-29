@@ -29,6 +29,34 @@ async function main() {
       role: "OWNER",
     },
   });
+  const projectManagerEmail = process.env.PROJECT_MANAGER_EMAIL?.trim().toLowerCase();
+  const projectManagerPassword = process.env.PROJECT_MANAGER_PASSWORD_B64
+    ? Buffer.from(process.env.PROJECT_MANAGER_PASSWORD_B64, "base64").toString("utf8")
+    : process.env.PROJECT_MANAGER_PASSWORD;
+  if (projectManagerEmail && projectManagerPassword) {
+    const projectManagerHash = await bcrypt.hash(projectManagerPassword, 12);
+    await db.administrator.upsert({
+      where: { email: projectManagerEmail },
+      update: {
+        name: process.env.PROJECT_MANAGER_NAME || "Project Manager",
+        phone: process.env.PROJECT_MANAGER_PHONE || null,
+        passwordHash: projectManagerHash,
+        role: "PROJECT_MANAGER",
+        active: true,
+        dailyBriefEnabled: process.env.PROJECT_MANAGER_DAILY_BRIEF_ENABLED !== "false",
+        dailyBriefTime: process.env.PROJECT_MANAGER_DAILY_BRIEF_TIME || "08:00",
+      },
+      create: {
+        name: process.env.PROJECT_MANAGER_NAME || "Project Manager",
+        email: projectManagerEmail,
+        phone: process.env.PROJECT_MANAGER_PHONE || null,
+        passwordHash: projectManagerHash,
+        role: "PROJECT_MANAGER",
+        dailyBriefEnabled: process.env.PROJECT_MANAGER_DAILY_BRIEF_ENABLED !== "false",
+        dailyBriefTime: process.env.PROJECT_MANAGER_DAILY_BRIEF_TIME || "08:00",
+      },
+    });
+  }
   const policies = [
     ["4-week confirmation email",40320,"EMAIL",1,fourWeekEmail,"Please confirm your {{role}} assignment for {{eventDate}} at {{eventLocation}}",false],
     ["14-day email reminder",20160,"EMAIL",2,twoWeekEmail,"Reminder: confirmation needed for {{eventDate}} at {{eventLocation}}",false],

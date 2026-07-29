@@ -1,9 +1,11 @@
 import { addDays } from "date-fns";
+import { Prisma } from "@prisma/client";
 import { parsePhoneNumber } from "libphonenumber-js";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { planAssignmentReminders } from "@/lib/reminders";
 import { VscoWorkspaceProvider } from "@/providers/vsco";
+import { notifyProjectManagers } from "@/services/project-manager";
 
 const assignmentRole = (role: string) => role.toLowerCase().includes("video") ? "VIDEOGRAPHER" as const : role.toLowerCase().includes("photo") ? "PHOTOGRAPHER" as const : "OTHER" as const;
 const removedPersonNames = new Set(["danielle tolson", "seth smith"]);
@@ -31,6 +33,25 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
           if (existing && existing.startsAt.getTime() !== item.startsAt.getTime()) {
             await db.eventChange.create({ data: { eventId: event.id, field: "startsAt", oldValue: existing.startsAt.toISOString(), newValue: item.startsAt.toISOString(), source: "VSCO" } });
             await db.plannedAction.updateMany({ where: { eventId: event.id, status: { in: ["PLANNED", "QUEUED"] } }, data: { status: "CANCELED", canceledAt: new Date() } });
+          }
+          if (existing && existing.endsAt?.getTime() !== item.endsAt?.getTime()) {
+            await db.eventChange.create({ data: { eventId: event.id, field: "endsAt", oldValue: existing.endsAt?.toISOString() ?? Prisma.JsonNull, newValue: item.endsAt?.toISOString() ?? Prisma.JsonNull, source: "VSCO" } });
+          }
+          for (const field of ["venueName", "address"] as const) {
+            if (existing && existing[field] !== item[field]) {
+              await db.eventChange.create({ data: { eventId: event.id, field, oldValue: existing[field] ?? Prisma.JsonNull, newValue: item[field] ?? Prisma.JsonNull, source: "VSCO" } });
+            }
+          }
+          if (existing && existing.canceled !== item.canceled) {
+            await db.eventChange.create({
+              data: {
+                eventId: event.id,
+                field: "status",
+                oldValue: existing.canceled ? "CANCELED" : "SCHEDULED",
+                newValue: item.canceled ? "CANCELED" : "SCHEDULED",
+                source: "VSCO",
+              },
+            });
           }
           if (item.assignments === null) {
             stats.warnings.push(`Event ${item.externalId}: team assignments were not present in the API response`);
@@ -72,11 +93,31 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
                   create: { eventId: event.id, personId: person.id, role, source: "VSCO", externalAssignmentId: source.id, confirmationStatus: "PENDING" },
                 });
             seen.add(assignment.id);
+            if (existing && !existing.assignments.some(old => old.id === assignment.id && old.active)) {
+              await db.eventChange.create({
+                data: {
+                  eventId: event.id,
+                  field: "assignment",
+                  oldValue: Prisma.JsonNull,
+                  newValue: { assignmentId: assignment.id, person: person.displayName, role },
+                  source: "VSCO",
+                },
+              });
+            }
             await planAssignmentReminders(assignment.id);
           }
           for (const old of existing?.assignments ?? []) if (old.source === "VSCO" && old.active && !seen.has(old.id)) {
             await db.assignment.update({ where: { id: old.id }, data: { active: false, needsAttention: true } });
             await db.plannedAction.updateMany({ where: { assignmentId: old.id, status: { in: ["PLANNED", "QUEUED"] } }, data: { status: "CANCELED", canceledAt: new Date() } });
+            await db.eventChange.create({
+              data: {
+                eventId: event.id,
+                field: "assignment",
+                oldValue: { assignmentId: old.id, personId: old.personId, role: old.role },
+                newValue: Prisma.JsonNull,
+                source: "VSCO",
+              },
+            });
           }
         } catch (error) { stats.failed++; stats.warnings.push(error instanceof Error ? error.message : "Unknown sync error"); }
       }
@@ -88,6 +129,60 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
     await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: "FAILED", errorSummary: error instanceof Error ? error.message : "Unknown error", details: stats } });
     throw error;
   }
+}
+
+export async function reconcileVscoSyncFailureAlert() {
+  const latestSuccess = await db.syncRun.findFirst({
+    where: { provider: "VSCO", status: "SUCCEEDED" },
+    orderBy: { completedAt: "desc" },
+  });
+  const failures = await db.syncRun.findMany({
+    where: {
+      provider: "VSCO",
+      status: "FAILED",
+      ...(latestSuccess?.completedAt ? { startedAt: { gt: latestSuccess.completedAt } } : {}),
+    },
+    orderBy: { startedAt: "asc" },
+  });
+  const existing = await db.operationalAlert.findFirst({
+    where: { type: "VSCO_SYNC_FAILURE", status: "OPEN" },
+    orderBy: { firstSeenAt: "desc" },
+  });
+  if (failures.length < 3) {
+    if (existing) {
+      await db.operationalAlert.update({
+        where: { id: existing.id },
+        data: { status: "RESOLVED", resolvedAt: new Date() },
+      });
+    }
+    return null;
+  }
+  const incidentKey = `vsco-sync-failure:${failures[0].id}`;
+  const alert = await db.operationalAlert.upsert({
+    where: { deduplicationKey: incidentKey },
+    update: {
+      status: "OPEN",
+      resolvedAt: null,
+      lastSeenAt: new Date(),
+      reason: `VSCO synchronization has failed ${failures.length} consecutive times`,
+      metadata: { failureCount: failures.length, latestError: failures.at(-1)?.errorSummary },
+    },
+    create: {
+      type: "VSCO_SYNC_FAILURE",
+      severity: "CRITICAL",
+      reason: `VSCO synchronization has failed ${failures.length} consecutive times`,
+      recommendedAction: "Review the VSCO integration credentials, endpoint, and Railway sync logs.",
+      deduplicationKey: incidentKey,
+      metadata: { failureCount: failures.length, latestError: failures.at(-1)?.errorSummary },
+    },
+  });
+  await notifyProjectManagers({
+    type: "VSCO_SYNC_FAILURE",
+    subject: "Urgent: VSCO synchronization is repeatedly failing",
+    body: `${alert.reason}.\n\n${alert.recommendedAction}`,
+    deduplicationKey: `alert:${alert.id}:${alert.firstSeenAt.toISOString()}`,
+  });
+  return alert;
 }
 
 async function applyPersonnelOverrides() {

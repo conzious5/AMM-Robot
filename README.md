@@ -1,6 +1,6 @@
 # Authentic Moments Booking and Reminder Agent
 
-A production-oriented scheduling operations system for Authentic Moments Media. It synchronizes weddings from VSCO Workspace, keeps confirmations and communication history in PostgreSQL, plans durable reminders through BullMQ/Redis, sends through Resend and Quo, handles replies, and gives an administrator a daily-operations dashboard.
+A production-oriented scheduling operations system for Authentic Moments Media. It synchronizes weddings from VSCO Workspace, keeps confirmations and communication history in PostgreSQL, plans durable reminders through BullMQ/Redis, sends through Resend and Quo, handles replies, and gives administrators and project managers a daily-operations dashboard.
 
 Test mode is on by default. Real contractors are never contacted until `TEST_MODE=false` is explicitly configured.
 
@@ -55,6 +55,18 @@ See [.env.example](.env.example). Provider credentials are server-only. Importan
 - `GLOBAL_COMMUNICATIONS_PAUSED=true` suppresses all automated sending.
 - `EMAIL_REPLY_DOMAIN` should be a dedicated receiving subdomain.
 - `QUO_PHONE_NUMBER` and `QUO_PHONE_NUMBER_ID` select the existing sender; no number is hardcoded.
+- `PROJECT_MANAGER_NAME`, `PROJECT_MANAGER_EMAIL`, `PROJECT_MANAGER_PHONE`, `PROJECT_MANAGER_PASSWORD` (or `_B64`), `PROJECT_MANAGER_DAILY_BRIEF_ENABLED`, and `PROJECT_MANAGER_DAILY_BRIEF_TIME` can create Cylina during a seed. Leaving contact fields blank is safe; an owner/admin can invite or update the project manager from Settings.
+- `VSCO_TASK_WEBHOOK_SECRET` protects the VSCO task-event fallback. It must be at least 24 random characters and is never displayed in the dashboard.
+
+## Project-manager operations
+
+`/operations` is the project-manager workspace. It groups upcoming events into Ready, Waiting, At risk, Incomplete, and Changed since confirmation; explains every readiness blocker; shows alerts, recent VSCO changes, planned actions, responses, and local/VSCO milestones; and provides audited controls for contractor contact, reminder resends, contact corrections, manual assignments, status changes, replacements, notes, pauses, and alert resolution.
+
+Required staffing is configured by event/job type in Settings. An event is ready only when required roles are filled, active assignments are confirmed, required venue details are present, material post-confirmation changes are resolved, and no critical task or other blocker remains.
+
+Project managers have operational access but cannot view raw secrets, modify authentication/security controls, delete audit history or records, or enable production communication. Consequential changes use explicit controls, permission checks, audit records, and idempotency keys.
+
+The sync cycle recalculates readiness and sends deduplicated alerts for new blockers and readiness transitions. Each configured project manager can choose email, SMS, or both for alerts and set a daily brief time. The daily email emphasizes the next 7 days while summarizing the next 30 days, recent readiness, declines/conflicts, failed delivery, upcoming reminders, overdue critical tasks, and recommended actions.
 
 ## VSCO Workspace
 
@@ -67,6 +79,40 @@ The sync supports cursor pagination, exponential retry for 429/5xx responses, hi
 For this application, a booked gig is a VSCO ceremony whose job has an assigned photographer or videographer. Lead calendar items and ceremonies without a production assignment are skipped. Older duplicate ceremony rows sharing the same VSCO job are automatically archived, along with their pending reminders.
 
 Reminder actions are sequential. Each unconfirmed assignment has at most one active reminder action. A later escalation is planned only after the current step is successfully sent (or an administrator explicitly skips it) and the assignment is still unconfirmed. Confirmation cancels the remaining sequence.
+
+### VSCO task capability and automation fallback
+
+Settings records the result of task capability inspection. The current published Workspace V2 documentation does not document a complete task-list API contract, so the application does not guess an endpoint or response fields. Direct task list, assignment, due-date, completion, deletion, and assigned-user reads remain marked unsupported unless a verified authenticated API contract is implemented.
+
+VSCO does officially document the `Task › Completed` automation observable and the `Web Request` action. To report completed tasks:
+
+1. Set a random `VSCO_TASK_WEBHOOK_SECRET` on the web service.
+2. In VSCO Workspace, create an automation with observable **Task › Completed**.
+3. Optionally add a condition matching `{{item.name}}`.
+4. Add a **Web Request** action using `POST`.
+5. Set the destination to:
+
+   `https://YOUR_DOMAIN/api/webhooks/vsco/task-event?secret=YOUR_SECRET`
+
+6. Send JSON using only tokens verified in VSCO’s automation documentation:
+
+```json
+{
+  "providerEventId": "task-{{job.id}}-{{item.name}}",
+  "eventType": "task.completed",
+  "jobId": "{{job.id}}",
+  "jobName": "{{job.type}}",
+  "taskName": "{{item.name}}"
+}
+```
+
+The endpoint also accepts authenticated `job.stage_changed` and `milestone.reached` events when an automation supplies their values. Every payload is stored idempotently, updates a locally sourced operational milestone, creates an audit record, and recalculates linked-event readiness.
+
+**A task-completion webhook confirms that a specific task was completed. It does not automatically provide the full list of all open or overdue VSCO tasks.**
+
+Until a complete task API is available, Settings and Operations allow smaller critical milestones to be tracked locally. Each record visibly identifies its source as VSCO API, VSCO automation webhook, AMM Robot calculated status, or manual project-manager entry; these milestones never claim to be the entire VSCO task list.
+
+Official references: [VSCO public API](https://help.workspace.vsco.co/en/articles/13259288-public-api), [Task Completed](https://help.workspace.vsco.co/en/articles/13259668-task-completed), [Web Request action](https://help.workspace.vsco.co/en/articles/13259697-web-request-action), and [Tasks menu behavior](https://help.workspace.vsco.co/en/articles/13259220-tasks-menu).
 
 ## Resend setup
 

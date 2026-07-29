@@ -10,6 +10,45 @@ datasource db {
 enum AdminRole {
   OWNER
   ADMIN
+  PROJECT_MANAGER
+}
+
+enum EventReadinessStatus {
+  READY
+  WAITING_FOR_CONFIRMATION
+  AT_RISK
+  INCOMPLETE
+  CHANGED_SINCE_CONFIRMATION
+  CANCELLED
+}
+
+enum OperationalAlertStatus {
+  OPEN
+  RESOLVED
+}
+
+enum OperationalTaskStatus {
+  NOT_ACTIVE
+  OPEN
+  DUE_SOON
+  OVERDUE
+  COMPLETED
+  DELETED
+  UNKNOWN
+}
+
+enum OperationalTaskSource {
+  VSCO_API
+  VSCO_AUTOMATION_WEBHOOK
+  AMM_CALCULATED
+  MANUAL_PROJECT_MANAGER
+}
+
+enum ProjectManagerNotificationStatus {
+  PLANNED
+  SENT
+  FAILED
+  SUPPRESSED
 }
 
 enum PersonRole {
@@ -104,9 +143,16 @@ model Administrator {
   id           String    @id @default(cuid())
   name         String
   email        String    @unique
+  phone        String?
   passwordHash String
   role         AdminRole @default(ADMIN)
   active       Boolean   @default(true)
+  dailyBriefEnabled Boolean @default(false)
+  dailyBriefTime String @default("08:00")
+  notificationChannel PreferredChannel @default(EMAIL)
+  assignedTasks OperationalTask[] @relation("TaskAdministrator")
+  notifications ProjectManagerNotification[]
+  dailyBriefs ProjectManagerDailyBrief[]
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 }
@@ -133,6 +179,7 @@ model Person {
   conversations      Conversation[]
   messages           Message[]
   plannedActions     PlannedAction[]
+  operationalAlerts  OperationalAlert[]
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 }
@@ -154,10 +201,18 @@ model Event {
   paused             Boolean         @default(false)
   rawProviderPayload Json?
   lastSyncedAt       DateTime?
+  readinessStatus    EventReadinessStatus @default(INCOMPLETE)
+  readinessReasons   Json?
+  readinessCalculatedAt DateTime?
+  administrativeUrl  String?
+  internalNotes      String?
   assignments        Assignment[]
   plannedActions     PlannedAction[]
   messages           Message[]
   changeHistory      EventChange[]
+  operationalTasks   OperationalTask[]
+  operationalAlerts  OperationalAlert[]
+  projectManagerNotifications ProjectManagerNotification[]
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
 }
@@ -194,9 +249,11 @@ model Assignment {
   lastReminderAt       DateTime?
   nextReminderAt       DateTime?
   reminderCount        Int                 @default(0)
+  internalNotes        String?
   plannedActions       PlannedAction[]
   messages             Message[]
   confirmationTokens   ConfirmationToken[]
+  operationalAlerts    OperationalAlert[]
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @updatedAt
 
@@ -365,4 +422,121 @@ model Setting {
   key       String   @id
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+model RequiredRoleRule {
+  id            String         @id @default(cuid())
+  jobType       String
+  role          AssignmentRole
+  requiredCount Int            @default(1)
+  active        Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@unique([jobType, role])
+}
+
+model OperationalTask {
+  id                           String                @id @default(cuid())
+  provider                     String
+  source                       OperationalTaskSource
+  externalTaskId               String?
+  externalTaskListId           String?
+  eventId                      String?
+  event                        Event?                @relation(fields: [eventId], references: [id])
+  vscoJobId                    String?
+  name                         String
+  description                  String?
+  workflowStage                String?
+  assignedVscoUserId           String?
+  assignedLocalAdministratorId String?
+  assignedLocalAdministrator   Administrator?        @relation("TaskAdministrator", fields: [assignedLocalAdministratorId], references: [id])
+  dueAt                        DateTime?
+  completedAt                  DateTime?
+  status                       OperationalTaskStatus @default(UNKNOWN)
+  priority                     String?
+  criticalForReadiness         Boolean               @default(false)
+  rawProviderPayload           Json?
+  lastSyncedAt                 DateTime?
+  createdAt                    DateTime               @default(now())
+  updatedAt                    DateTime               @updatedAt
+
+  @@unique([provider, externalTaskId])
+  @@index([eventId, status])
+  @@index([assignedLocalAdministratorId, status])
+}
+
+model OperationalAlert {
+  id           String                 @id @default(cuid())
+  eventId      String?
+  event        Event?                 @relation(fields: [eventId], references: [id])
+  assignmentId String?
+  assignment   Assignment?            @relation(fields: [assignmentId], references: [id])
+  personId     String?
+  person       Person?                @relation(fields: [personId], references: [id])
+  type         String
+  severity     String
+  reason       String
+  recommendedAction String?
+  status       OperationalAlertStatus @default(OPEN)
+  deduplicationKey String              @unique
+  firstSeenAt  DateTime               @default(now())
+  lastSeenAt   DateTime               @default(now())
+  resolvedAt   DateTime?
+  resolvedById String?
+  metadata     Json?
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  @@index([status, severity])
+  @@index([eventId, status])
+}
+
+model ProviderCapability {
+  id         String   @id @default(cuid())
+  provider   String
+  capability String
+  supported  Boolean
+  evidence   String
+  details    Json?
+  checkedAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([provider, capability])
+}
+
+model ProjectManagerNotification {
+  id              String                           @id @default(cuid())
+  administratorId String
+  administrator   Administrator                    @relation(fields: [administratorId], references: [id])
+  eventId         String?
+  event           Event?                           @relation(fields: [eventId], references: [id])
+  type            String
+  channel         Channel
+  subject         String?
+  body            String
+  status          ProjectManagerNotificationStatus @default(PLANNED)
+  deduplicationKey String                          @unique
+  providerMessageId String?
+  failureReason   String?
+  sentAt          DateTime?
+  createdAt       DateTime                         @default(now())
+  updatedAt       DateTime                         @updatedAt
+
+  @@index([administratorId, status])
+}
+
+model ProjectManagerDailyBrief {
+  id              String        @id @default(cuid())
+  administratorId String
+  administrator   Administrator @relation(fields: [administratorId], references: [id])
+  periodStart     DateTime
+  periodEnd       DateTime
+  deduplicationKey String       @unique
+  subject         String
+  body            String
+  status          String
+  providerMessageId String?
+  sentAt          DateTime?
+  createdAt       DateTime      @default(now())
 }

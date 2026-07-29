@@ -1,23 +1,30 @@
 import Link from "next/link";
+import { randomUUID } from "node:crypto";
 import { formatDistanceToNow } from "date-fns";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { actionsQueue } from "@/lib/queue";
-import { skipReminderAction } from "@/lib/reminders";
 import { DataTable } from "@/components/DataTable";
+import { requireAdmin } from "@/lib/auth";
+import {
+  cancelPlannedCommunication,
+  reschedulePlannedCommunication,
+  sendPlannedCommunicationNow,
+  skipPlannedReminder,
+} from "@/services/operations";
 
 const activeStatuses = ["PLANNED", "QUEUED", "PROCESSING", "FAILED", "WAITING_FOR_APPROVAL"] as const;
 type View = "next" | "history" | "all";
 
 async function mutate(data: FormData) {
   "use server";
+  const admin = await requireAdmin();
   const id = String(data.get("id"));
   const op = String(data.get("op"));
-  if (op === "skip") await skipReminderAction(id);
-  if (op === "send") {
-    await db.plannedAction.update({ where: { id }, data: { status: "QUEUED", scheduledFor: new Date(), lastError: null } });
-    await actionsQueue.add("send", { actionId: id }, { jobId: `manual-${id}-${Date.now()}` });
-  }
+  const nonce = String(data.get("nonce"));
+  if (op === "skip") await skipPlannedReminder(admin.id, id, nonce);
+  if (op === "send") await sendPlannedCommunicationNow(admin.id, id, nonce);
+  if (op === "cancel") await cancelPlannedCommunication(admin.id, id, nonce);
+  if (op === "reschedule") await reschedulePlannedCommunication(admin.id, id, new Date(String(data.get("scheduledFor"))), nonce);
   revalidatePath("/actions");
 }
 
@@ -95,8 +102,12 @@ export default async function Page({
               ? (
                 <form action={mutate} className="action-controls" key="controls">
                   <input type="hidden" name="id" value={action.id} />
+                  <input type="hidden" name="nonce" value={`planned-action:${action.id}:${randomUUID()}`} />
                   <button name="op" value="send">{action.status === "FAILED" ? "Retry now" : "Send now"}</button>
                   {action.assignmentId && <button className="secondary" name="op" value="skip">Skip step</button>}
+                  <button className="secondary" name="op" value="cancel">Cancel</button>
+                  <input name="scheduledFor" type="datetime-local" />
+                  <button className="secondary" name="op" value="reschedule">Reschedule</button>
                 </form>
               )
               : "—",

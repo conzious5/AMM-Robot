@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { handleDeterministic, deterministicIntent } from "@/services/inbound";
 import { answerScheduleQuestion } from "@/services/agent";
 import { parsePhoneNumber } from "libphonenumber-js";
+import { notifyProjectManagers } from "@/services/project-manager";
 
 const worker = new Worker("planned-actions", async job => sendPlannedAction(job.data.actionId as string), { connection, concurrency: 10 });
 const webhookWorker = new Worker("webhooks", async job => {
@@ -30,6 +31,28 @@ const webhookWorker = new Worker("webhooks", async job => {
       const conversation = await db.conversation.upsert({ where: { personId_channel: { personId: person.id, channel: "SMS" } }, update: { lastMessageAt: new Date() }, create: { personId: person.id, channel: "SMS" } });
       await db.message.upsert({ where: { providerMessageId: String(data.id) }, update: {}, create: { conversationId: conversation.id, personId: person.id, direction: "INBOUND", channel: "SMS", provider: "QUO", providerMessageId: String(data.id), sender: phone, recipient: String(data.to ?? ""), textContent: String(text), deliveryStatus: "RECEIVED", authorType: "CONTRACTOR", receivedAt: new Date(), rawProviderPayload: data } });
       const deterministic = await handleDeterministic(person.id, String(text), "SMS");
+      if (/\b(conflict|double.booked|cannot work|can't work|unavailable)\b/i.test(String(text))) {
+        const key = `scheduling-conflict:${event.providerEventId}`;
+        const conflictAlert = await db.operationalAlert.upsert({
+          where: { deduplicationKey: key },
+          update: { lastSeenAt: new Date(), status: "OPEN", resolvedAt: null },
+          create: {
+            personId: person.id,
+            type: "SCHEDULING_CONFLICT",
+            severity: "CRITICAL",
+            reason: `${person.displayName} reported a scheduling conflict by text`,
+            recommendedAction: "Review the contractor's upcoming assignments and contact a replacement if needed.",
+            deduplicationKey: key,
+            metadata: { providerEventId: event.providerEventId },
+          },
+        });
+        await notifyProjectManagers({
+          type: "SCHEDULING_CONFLICT",
+          subject: `Urgent: ${person.displayName} reported a scheduling conflict`,
+          body: `${person.displayName} reported a scheduling conflict by text.\n\nReview the contractor's upcoming assignments and contact a replacement if needed.`,
+          deduplicationKey: `alert:${conflictAlert.id}:${conflictAlert.firstSeenAt.toISOString()}`,
+        });
+      }
       const reply = deterministic ?? await answerScheduleQuestion(person.id, String(text));
       const action = await db.plannedAction.create({ data: { type: "AGENT_REPLY", personId: person.id, channel: "SMS", scheduledFor: new Date(), status: "PLANNED", reason: deterministicIntent(String(text)) === "NATURAL_LANGUAGE" ? "Scheduling agent reply" : "Deterministic compliance/confirmation reply", messagePreview: reply, idempotencyKey: `reply:quo:${event.providerEventId}` } });
       await sendPlannedAction(action.id);
