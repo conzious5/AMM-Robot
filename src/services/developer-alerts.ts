@@ -10,13 +10,19 @@ type DeveloperAlertInput = {
 
 export async function notifySystemDeveloper(input: DeveloperAlertInput) {
   const settingKey = `developer-alert:${input.key}`;
-  try {
+  const existing = await db.setting.findUnique({ where: { key: settingKey } });
+  const existingValue = existing?.value as { status?: string; providerMessageId?: string } | undefined;
+  if (existingValue?.status === "SENT") return existingValue.providerMessageId ?? settingKey;
+
+  if (existing) {
+    await db.setting.update({
+      where: { key: settingKey },
+      data: { value: { status: "PLANNED", subject: input.subject, retriedAt: new Date().toISOString() } },
+    });
+  } else {
     await db.setting.create({
       data: { key: settingKey, value: { status: "PLANNED", subject: input.subject, createdAt: new Date().toISOString() } },
     });
-  } catch (error) {
-    if (typeof error === "object" && error && "code" in error && error.code === "P2002") return null;
-    throw error;
   }
 
   const config = env();

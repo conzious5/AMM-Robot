@@ -162,6 +162,21 @@ export async function activatePreparedProductionLaunch(now = new Date()) {
   const state = await getProductionLaunchState();
   if (!state) throw new Error("Production communication is blocked because no launch plan was prepared.");
   if (state.status === "LIVE") return state;
+  const alertMessageId = await notifySystemDeveloper({
+    key: `production-launch:${state.preparedAt}`,
+    subject: "AMM Robot is live",
+    body: `Production communication is active.
+
+Contractor introductions planned: ${state.eligibleContractors}
+Contractors skipped: ${state.skippedContractors}
+Assignments continuing reminders: ${state.eligibleAssignments}
+Assignments suppressed inside 7 days: ${state.suppressedAssignments}
+Introduction start: ${state.introStart}
+Reminder start: ${state.reminderStart}`,
+  });
+  if (!alertMessageId) {
+    throw new Error("Production launch blocked because the system-developer alert could not be delivered.");
+  }
   const liveState: LaunchState = { ...state, status: "LIVE", activatedAt: now.toISOString() };
   await db.setting.update({ where: { key: launchSettingKey }, data: { value: liveState } });
   await db.auditLog.create({
@@ -173,18 +188,6 @@ export async function activatePreparedProductionLaunch(now = new Date()) {
       before: state,
       after: liveState,
     },
-  });
-  await notifySystemDeveloper({
-    key: `production-launch:${state.preparedAt}`,
-    subject: "AMM Robot is live",
-    body: `Production communication is active.
-
-Contractor introductions planned: ${state.eligibleContractors}
-Contractors skipped: ${state.skippedContractors}
-Assignments continuing reminders: ${state.eligibleAssignments}
-Assignments suppressed inside 7 days: ${state.suppressedAssignments}
-Introduction start: ${state.introStart}
-Reminder start: ${state.reminderStart}`,
   });
   return liveState;
 }
