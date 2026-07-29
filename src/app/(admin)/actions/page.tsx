@@ -12,6 +12,11 @@ import {
   skipPlannedReminder,
 } from "@/services/operations";
 import { communicationChannelLabel } from "@/lib/channels";
+import { formatInTimeZone } from "date-fns-tz";
+
+function displayDateTime(date: Date, timezone = "America/Denver") {
+  return formatInTimeZone(date, timezone, "M/d/yyyy, h:mm a zzz");
+}
 
 const activeStatuses = ["PLANNED", "QUEUED", "PROCESSING", "FAILED", "WAITING_FOR_APPROVAL"] as const;
 type View = "next" | "history" | "all";
@@ -65,7 +70,7 @@ export default async function Page({
       </div>
       <div className="card action-summary">
         <b>{data.length} {view === "next" ? "current next actions" : view === "history" ? "historical actions" : "actions shown"}</b>
-        {view === "next" && <span className="muted">One active reminder at most per assignment</span>}
+        {view === "next" && <span className="muted">One active reminder per assignment · one automated reminder per contractor per day</span>}
       </div>
       <DataTable
         columns={["Scheduled timing", "Recipient / assignment", "Sequence step", "Preview", "Status", "Controls"]}
@@ -77,7 +82,7 @@ export default async function Page({
           const canControl = activeStatuses.includes(action.status as typeof activeStatuses[number]);
           return [
             <span key="when">
-              <b>{action.scheduledFor.toLocaleString()}</b>
+              <b>{displayDateTime(action.scheduledFor, action.person?.timezone ?? action.event?.timezone)}</b>
               <br />
               <span className={action.scheduledFor < new Date() ? "danger" : "muted"}>{relative}</span>
             </span>,
@@ -85,7 +90,7 @@ export default async function Page({
               <b>{action.person?.displayName ?? "System"}</b>
               <br />
               {action.event?.name ?? "Conversation reply"}
-              {action.event && <><br /><span className="muted">Ceremony: {action.event.startsAt.toLocaleString()}</span></>}
+              {action.event && <><br /><span className="muted">Ceremony: {displayDateTime(action.event.startsAt, action.event.timezone)}</span></>}
             </span>,
             <span key="step">
               {step ? <b>Step {step} of {policies.length}</b> : <b>{action.type.replaceAll("_", " ").toLowerCase()}</b>}

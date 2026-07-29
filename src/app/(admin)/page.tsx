@@ -4,6 +4,11 @@ import { OperationStatusSummary } from "@/components/OperationStatusSummary";
 import { getOperationOverview } from "@/services/operation-status";
 import { communicationChannelLabel } from "@/lib/channels";
 import { launchIncludedEventWhere } from "@/lib/launch-cutoff";
+import { formatInTimeZone } from "date-fns-tz";
+
+function displayDateTime(date: Date, timezone = "America/Denver") {
+  return formatInTimeZone(date, timezone, "M/d/yyyy, h:mm a zzz");
+}
 
 export default async function Dashboard() {
   const now = new Date();
@@ -74,7 +79,7 @@ export default async function Dashboard() {
           {events.map(event => (
             <tr key={event.id}>
               <td>{event.name}<div className="muted">{event.venueName ?? "Venue pending"}</div></td>
-              <td>{event.startsAt.toLocaleString()}</td>
+              <td>{displayDateTime(event.startsAt, event.timezone)}</td>
               <td>{event.assignments.filter(assignment => assignment.active && assignment.person.active).map(assignment => <div key={assignment.id}>{assignment.person.displayName} · {assignment.role.toLowerCase()}</div>)}</td>
               <td>
                 <span className="pill">{event.readinessStatus.replaceAll("_", " ")}</span>
@@ -86,16 +91,17 @@ export default async function Dashboard() {
       </table>
 
       <h2>Next planned actions</h2>
+      <p className="muted">Maximum: one automated reminder per contractor per local calendar day. The delivery method is shown for every action.</p>
       <table>
         <thead><tr><th>When</th><th>Contractor</th><th>Wedding</th><th>Communication</th><th>Status</th></tr></thead>
         <tbody>
-          {actions.map(action => <tr key={action.id}><td>{action.scheduledFor.toLocaleString()}</td><td>{action.person?.displayName}</td><td>{action.event?.name}</td><td><span className="pill">{communicationChannelLabel(action.channel)}</span></td><td>{action.status}</td></tr>)}
+          {actions.map(action => <tr key={action.id}><td>{displayDateTime(action.scheduledFor, action.person?.timezone ?? action.event?.timezone)}</td><td>{action.person?.displayName}</td><td>{action.event?.name}</td><td><span className="pill">{communicationChannelLabel(action.channel)}</span></td><td>{action.status}</td></tr>)}
         </tbody>
       </table>
 
       <h2>Integration health</h2>
       <div className="card">
-        <b>Latest VSCO sync:</b> {sync ? `${sync.status} · ${sync.startedAt.toLocaleString()}` : "Never run"}
+        <b>Latest VSCO sync:</b> {sync ? `${sync.status} · ${displayDateTime(sync.startedAt)}` : "Never run"}
         {sync?.errorSummary && <p className="danger">{sync.errorSummary}</p>}
         <p>Recent inbound messages: {messages.length}</p>
       </div>
