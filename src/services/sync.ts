@@ -40,11 +40,19 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
             if (!person && phone) person = await db.person.findUnique({ where: { phone } });
             if (!person) person = await db.person.create({ data: { vscoExternalId: member.id, firstName: member.firstName, lastName: member.lastName, displayName: member.name ?? `${member.firstName} ${member.lastName}`.trim(), email: member.email, normalizedEmail: email, phone, role: assignmentRole(source.role) === "VIDEOGRAPHER" ? "VIDEOGRAPHER" : "PHOTOGRAPHER", rawProviderPayload: member } });
             const role = assignmentRole(source.role);
-            const assignment = await db.assignment.upsert({
-              where: { eventId_personId_role: { eventId: event.id, personId: person.id, role } },
-              update: { active: true, externalAssignmentId: source.id, source: "VSCO" },
-              create: { eventId: event.id, personId: person.id, role, source: "VSCO", externalAssignmentId: source.id, confirmationStatus: "PENDING" },
-            });
+            const externalAssignment = source.id
+              ? await db.assignment.findUnique({ where: { externalAssignmentId: source.id } })
+              : null;
+            const assignment = externalAssignment
+              ? await db.assignment.update({
+                  where: { id: externalAssignment.id },
+                  data: { eventId: event.id, personId: person.id, role, active: true, source: "VSCO" },
+                })
+              : await db.assignment.upsert({
+                  where: { eventId_personId_role: { eventId: event.id, personId: person.id, role } },
+                  update: { active: true, externalAssignmentId: source.id, source: "VSCO" },
+                  create: { eventId: event.id, personId: person.id, role, source: "VSCO", externalAssignmentId: source.id, confirmationStatus: "PENDING" },
+                });
             seen.add(assignment.id);
             await planAssignmentReminders(assignment.id);
           }
