@@ -1,7 +1,12 @@
+import { randomUUID } from "node:crypto";
+import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { OperationStatusSummary } from "@/components/OperationStatusSummary";
-import { getOperationOverview, plainStatus, type OperationTone } from "@/services/operation-status";
+import { requireAdmin } from "@/lib/auth";
+import { assertPermission } from "@/lib/permissions";
+import { dismissOperationError, getOperationOverview, plainStatus, type OperationTone } from "@/services/operation-status";
+import { resolveOperationalAlert } from "@/services/operations";
 
 type RunRow = {
   key: string;
@@ -19,6 +24,21 @@ function actionName(type: string) {
   if (type === "ESCALATE") return "Escalate an unconfirmed assignment";
   if (type === "AGENT_REPLY") return "Reply to an incoming message";
   return type.replaceAll("_", " ").toLowerCase();
+}
+
+async function dismissError(data: FormData) {
+  "use server";
+  const admin = await requireAdmin();
+  assertPermission(admin, "alerts:resolve");
+  const key = String(data.get("errorKey") || "");
+  if (key.startsWith("alert:")) {
+    await resolveOperationalAlert(admin.id, key.slice("alert:".length), `dismiss:${key}:${randomUUID()}`);
+  } else {
+    await dismissOperationError(admin.id, key);
+  }
+  revalidatePath("/");
+  revalidatePath("/logs");
+  revalidatePath("/operations");
 }
 
 export default async function Page() {
@@ -88,7 +108,7 @@ export default async function Page() {
         <div className="section-heading">
           <div>
             <h2>Errors and urgent items</h2>
-            <p className="muted">Red rows need attention. Older resolved activity remains in the detailed logs below.</p>
+            <p className="muted">Open an item for its source. Dismiss removes it from this current summary only; the detailed record and audit history remain.</p>
           </div>
           <Link className="button secondary" href="/operations">Open Operations</Link>
         </div>
@@ -96,15 +116,23 @@ export default async function Page() {
           <div className="card ready">✓ No current errors or urgent items.</div>
         ) : (
           <table className="error-table">
-            <thead><tr><th>Status</th><th>When</th><th>Area</th><th>What happened</th><th>What it means</th></tr></thead>
+            <thead><tr><th>Status</th><th>When</th><th>Area</th><th>What happened</th><th>What it means</th><th>Action</th></tr></thead>
             <tbody>
               {overview.errors.map(error => (
                 <tr className="error-log-row" key={error.key}>
                   <td><span className="status-badge status-error"><span aria-hidden="true">×</span> Error</span></td>
                   <td>{error.when.toLocaleString()}</td>
                   <td>{error.area}</td>
-                  <td><b>{error.summary}</b></td>
+                  <td><Link href={error.href}><b>{error.summary}</b><br /><u>Open item →</u></Link></td>
                   <td>{error.detail}</td>
+                  <td>
+                    {error.dismissible ? (
+                      <form action={dismissError}>
+                        <input type="hidden" name="errorKey" value={error.key} />
+                        <button className="secondary">Dismiss</button>
+                      </form>
+                    ) : <span className="muted">Still active</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -136,7 +164,7 @@ export default async function Page() {
             const status = plainStatus(run.status);
             const isError = status.tone === "error" || run.itemsFailed > 0;
             return (
-              <tr className={isError ? "error-log-row" : undefined} key={run.id}>
+              <tr className={isError ? "error-log-row" : undefined} id={`sync-${run.id}`} key={run.id}>
                 <td><span className={`status-badge status-${isError ? "error" : status.tone}`}><span aria-hidden="true">{isError ? "×" : status.icon}</span> {isError ? "Needs attention" : status.label}</span></td>
                 <td>{run.startedAt.toLocaleString()}</td>
                 <td>{run.completedAt?.toLocaleString() ?? "Still running"}</td>
@@ -159,7 +187,7 @@ export default async function Page() {
           {webhooks.map(webhook => {
             const status = plainStatus(webhook.status);
             return (
-              <tr className={status.tone === "error" ? "error-log-row" : undefined} key={webhook.id}>
+              <tr className={status.tone === "error" ? "error-log-row" : undefined} id={`webhook-${webhook.id}`} key={webhook.id}>
                 <td><span className={`status-badge status-${status.tone}`}><span aria-hidden="true">{status.icon}</span> {status.label}</span></td>
                 <td>{webhook.receivedAt.toLocaleString()}</td>
                 <td>{webhook.provider}</td>
@@ -178,7 +206,7 @@ export default async function Page() {
           {agents.map(run => {
             const status = plainStatus(run.status);
             return (
-              <tr className={status.tone === "error" ? "error-log-row" : undefined} key={run.id}>
+              <tr className={status.tone === "error" ? "error-log-row" : undefined} id={`agent-${run.id}`} key={run.id}>
                 <td><span className={`status-badge status-${status.tone}`}><span aria-hidden="true">{status.icon}</span> {status.label}</span></td>
                 <td>{run.createdAt.toLocaleString()}</td>
                 <td>{run.model}</td>

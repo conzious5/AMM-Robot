@@ -9,6 +9,7 @@ import { classifyProjectManagerQuestion, projectManagerToolNames } from "@/lib/p
 import { isVscoTaskWebhookAuthorized } from "@/lib/vsco-task-webhook";
 import { assignmentIsInsideLaunchExclusion, contractorLaunchEligibility } from "@/services/go-live";
 import { administratorInviteIsUsable, administratorInviteKey } from "@/lib/admin-invite";
+import { isDismissibleOperationErrorKey, operationErrorDismissalSettingKey } from "@/services/operation-status";
 
 const base = (overrides: Partial<ReadinessInput> = {}): ReadinessInput => ({
   canceled: false,
@@ -77,6 +78,14 @@ describe("project-manager acceptance", () => {
     };
     expect(administratorInviteIsUsable(value, new Date("2026-07-30T18:00:00.000Z"))).toBe(true);
     expect(administratorInviteIsUsable(value, new Date("2026-08-01T18:00:00.000Z"))).toBe(false);
+  });
+
+  it("allows current-error dismissals only for supported logged error sources", () => {
+    expect(isDismissibleOperationErrorKey("sync:run-1")).toBe(true);
+    expect(isDismissibleOperationErrorKey("webhook:event-1")).toBe(true);
+    expect(isDismissibleOperationErrorKey("alert:alert-1")).toBe(false);
+    expect(isDismissibleOperationErrorKey("anything:unsafe")).toBe(false);
+    expect(operationErrorDismissalSettingKey("sync:run-1")).toBe("operation-error-dismissal:sync:run-1");
   });
 
   it("allows project managers to resend and send communications", () => {

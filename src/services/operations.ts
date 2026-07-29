@@ -62,12 +62,12 @@ export async function getEventReadiness(eventId: string) {
 }
 
 export async function listReadyEvents(from = new Date(), to = new Date(Date.now() + 30 * 86400000)) {
-  return db.event.findMany({ where: { startsAt: { gte: from, lte: to }, readinessStatus: "READY", canceled: false }, orderBy: { startsAt: "asc" } });
+  return db.event.findMany({ where: { startsAt: { gte: from, lte: to }, readinessStatus: "READY", canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, orderBy: { startsAt: "asc" } });
 }
 
 export async function listEventsNeedingAttention(from = new Date(), to = new Date(Date.now() + 30 * 86400000)) {
   return db.event.findMany({
-    where: { startsAt: { gte: from, lte: to }, canceled: false, readinessStatus: { not: "READY" } },
+    where: { startsAt: { gte: from, lte: to }, canceled: false, readinessStatus: { not: "READY" }, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } },
     include: { operationalAlerts: { where: { status: "OPEN" } } },
     orderBy: { startsAt: "asc" },
   });
@@ -75,7 +75,7 @@ export async function listEventsNeedingAttention(from = new Date(), to = new Dat
 
 export async function listUnconfirmedAssignments(from = new Date(), to = new Date(Date.now() + 90 * 86400000)) {
   return db.assignment.findMany({
-    where: { active: true, confirmationStatus: { not: "CONFIRMED" }, event: { startsAt: { gte: from, lte: to }, canceled: false } },
+    where: { active: true, confirmationStatus: { not: "CONFIRMED" }, event: { startsAt: { gte: from, lte: to }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } } },
     include: { event: true, person: true },
     orderBy: { event: { startsAt: "asc" } },
   });
@@ -429,7 +429,7 @@ export async function answerProjectManagerQuestion(adminId: string, question: st
     answer = events.length ? events.map(event => `${event.name} — ${event.startsAt.toLocaleDateString()}`).join("\n") : "No matching ready events were found.";
   } else if (tool === "get_event_readiness") {
     const events = await db.event.findMany({
-      where: { startsAt: { gte: new Date() }, canceled: false },
+      where: { startsAt: { gte: new Date() }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } },
       orderBy: { startsAt: "asc" },
       take: 100,
     });

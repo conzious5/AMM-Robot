@@ -95,7 +95,7 @@ export default async function Page() {
   const sevenDays = new Date(now.getTime() + 7 * 86400000);
   const [events, alerts, changes, actions, people, agentResult, conflicts] = await Promise.all([
     db.event.findMany({
-      where: { startsAt: { gte: now }, canceled: false },
+      where: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } },
       include: {
         assignments: { where: { active: true }, include: { person: true, messages: true, plannedActions: true } },
         operationalTasks: { where: { status: { notIn: ["DELETED"] } }, orderBy: { dueAt: "asc" } },

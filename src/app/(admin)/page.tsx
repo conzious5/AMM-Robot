@@ -7,26 +7,26 @@ export default async function Dashboard() {
   const now = new Date();
   const [events, upcomingCount, pending, confirmed, declined, failed, actions, messages, sync, ready, needsAttention, overview] = await Promise.all([
     db.event.findMany({
-      where: { startsAt: { gte: now }, canceled: false },
+      where: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } },
       include: { assignments: { include: { person: true } } },
       orderBy: { startsAt: "asc" },
       take: 10,
     }),
-    db.event.count({ where: { startsAt: { gte: now }, canceled: false } }),
-    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false }, confirmationStatus: "PENDING" } }),
-    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false }, confirmationStatus: "CONFIRMED" } }),
-    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false }, confirmationStatus: "DECLINED" } }),
+    db.event.count({ where: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } } }),
+    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, confirmationStatus: "PENDING" } }),
+    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, confirmationStatus: "CONFIRMED" } }),
+    db.assignment.count({ where: { active: true, person: { active: true }, event: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, confirmationStatus: "DECLINED" } }),
     db.message.count({ where: { deliveryStatus: { in: ["FAILED", "BOUNCED", "COMPLAINED"] } } }),
     db.plannedAction.findMany({
-      where: { status: { in: ["PLANNED", "QUEUED"] }, event: { startsAt: { gte: now }, canceled: false }, person: { active: true } },
+      where: { status: { in: ["PLANNED", "QUEUED"] }, event: { startsAt: { gte: now }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, person: { active: true } },
       include: { person: true, event: true },
       orderBy: { scheduledFor: "asc" },
       take: 8,
     }),
     db.message.findMany({ where: { direction: "INBOUND" }, include: { person: true }, orderBy: { createdAt: "desc" }, take: 6 }),
     db.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
-    db.event.count({ where: { startsAt: { gte: now }, canceled: false, readinessStatus: "READY" } }),
-    db.event.count({ where: { startsAt: { gte: now }, canceled: false, readinessStatus: { in: ["AT_RISK", "INCOMPLETE", "CHANGED_SINCE_CONFIRMATION"] } } }),
+    db.event.count({ where: { startsAt: { gte: now }, canceled: false, readinessStatus: "READY", NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } } }),
+    db.event.count({ where: { startsAt: { gte: now }, canceled: false, readinessStatus: { in: ["AT_RISK", "INCOMPLETE", "CHANGED_SINCE_CONFIRMATION"] }, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } } }),
     getOperationOverview(),
   ]);
 

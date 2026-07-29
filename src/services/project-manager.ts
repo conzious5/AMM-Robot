@@ -183,7 +183,7 @@ export async function buildDailyBrief(periodStart: Date, now = new Date()) {
   const end = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
   const sevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
   const [events, alerts, declines, failures, actions, readySince, overdueTasks] = await Promise.all([
-    db.event.findMany({ where: { startsAt: { gte: now, lte: end }, canceled: false }, orderBy: { startsAt: "asc" } }),
+    db.event.findMany({ where: { startsAt: { gte: now, lte: end }, canceled: false, NOT: { internalNotes: { contains: "[LAUNCH_CUTOFF_EXCLUDED]" } } }, orderBy: { startsAt: "asc" } }),
     db.operationalAlert.findMany({ where: { status: "OPEN" }, include: { event: true, person: true }, orderBy: { firstSeenAt: "asc" } }),
     db.assignment.findMany({ where: { declinedAt: { gte: periodStart }, active: true }, include: { event: true, person: true } }),
     db.message.findMany({ where: { createdAt: { gte: periodStart }, deliveryStatus: { in: ["FAILED", "BOUNCED"] } }, include: { person: true, event: true } }),

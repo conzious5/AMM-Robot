@@ -18,7 +18,63 @@ export type OperationError = {
   area: string;
   summary: string;
   detail: string;
+  href: string;
+  dismissible: boolean;
 };
+
+const dismissalPrefix = "operation-error-dismissal:";
+const dismissiblePrefixes = ["developer-alert:", "sync:", "action:", "webhook:", "message:", "agent:"] as const;
+
+export function operationErrorDismissalSettingKey(errorKey: string) {
+  return `${dismissalPrefix}${errorKey}`;
+}
+
+export function isDismissibleOperationErrorKey(errorKey: string) {
+  return dismissiblePrefixes.some(prefix => errorKey.startsWith(prefix));
+}
+
+export async function dismissOperationError(administratorId: string, errorKey: string) {
+  if (!isDismissibleOperationErrorKey(errorKey)) throw new Error("This error type cannot be dismissed here.");
+  const [prefix, id] = errorKey.split(":", 2);
+  let sourceExists = false;
+  if (prefix === "developer-alert") {
+    sourceExists = Boolean(await db.setting.findUnique({ where: { key: errorKey } }));
+  } else if (prefix === "sync") {
+    const run = await db.syncRun.findUnique({ where: { id } });
+    if (run) {
+      const recovered = await db.syncRun.findFirst({
+        where: { startedAt: { gt: run.startedAt }, status: "SUCCEEDED", itemsFailed: 0 },
+      });
+      if (!recovered) throw new Error("This VSCO failure is still current and cannot be dismissed yet.");
+      sourceExists = true;
+    }
+  } else if (prefix === "action") {
+    sourceExists = Boolean(await db.plannedAction.findUnique({ where: { id } }));
+  } else if (prefix === "webhook") {
+    sourceExists = Boolean(await db.webhookEvent.findUnique({ where: { id } }));
+  } else if (prefix === "message") {
+    sourceExists = Boolean(await db.message.findUnique({ where: { id } }));
+  } else if (prefix === "agent") {
+    sourceExists = Boolean(await db.agentRun.findUnique({ where: { id } }));
+  }
+  if (!sourceExists) throw new Error("The error record no longer exists.");
+  const dismissedAt = new Date();
+  await db.setting.upsert({
+    where: { key: operationErrorDismissalSettingKey(errorKey) },
+    update: { value: { administratorId, dismissedAt: dismissedAt.toISOString() } },
+    create: { key: operationErrorDismissalSettingKey(errorKey), value: { administratorId, dismissedAt: dismissedAt.toISOString() } },
+  });
+  await db.auditLog.create({
+    data: {
+      actorType: "ADMIN",
+      actorId: administratorId,
+      action: "OPERATION_ERROR_DISMISSED",
+      entityType: "OperationError",
+      entityId: errorKey,
+      after: { dismissedAt: dismissedAt.toISOString() },
+    },
+  });
+}
 
 const statusMap: Record<string, { tone: OperationTone; icon: string; label: string }> = {
   SUCCEEDED: { tone: "good", icon: "✓", label: "Worked" },
@@ -70,6 +126,7 @@ export async function getOperationOverview() {
     failedSyncRuns,
     openUrgentAlerts,
     developerAlertSettings,
+    dismissalSettings,
   ] = await Promise.all([
     db.setting.findUnique({ where: { key: "production-launch" } }),
     db.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
@@ -108,6 +165,7 @@ export async function getOperationOverview() {
     }),
     db.operationalAlert.findMany({
       where: { status: "OPEN", severity: { in: ["CRITICAL", "HIGH"] } },
+      include: { event: true },
       orderBy: { firstSeenAt: "desc" },
       take: 25,
     }),
@@ -116,9 +174,15 @@ export async function getOperationOverview() {
       orderBy: { updatedAt: "desc" },
       take: 50,
     }),
+    db.setting.findMany({
+      where: { key: { startsWith: dismissalPrefix } },
+      select: { key: true },
+    }),
   ]);
 
+  const dismissedKeys = new Set(dismissalSettings.map(setting => setting.key.slice(dismissalPrefix.length)));
   const failedDeveloperAlerts = developerAlertSettings.filter(setting => valueRecord(setting.value).status === "FAILED");
+  const relevantOpenUrgentAlerts = openUrgentAlerts.filter(alert => !alert.event?.internalNotes?.includes("[LAUNCH_CUTOFF_EXCLUDED]"));
   const launch = valueRecord(launchSetting?.value);
   const launchStatus = typeof launch.status === "string" ? launch.status : "NOT_PREPARED";
   const config = env();
@@ -132,21 +196,29 @@ export async function getOperationOverview() {
         area: "System email alert",
         summary: typeof value.subject === "string" ? value.subject : "A system alert could not be sent",
         detail: typeof value.failure === "string" ? value.failure : "Email provider rejected the alert.",
+        href: "/logs#errors",
+        dismissible: true,
       };
     }),
-    ...openUrgentAlerts.map(alert => ({
+    ...relevantOpenUrgentAlerts.map(alert => ({
       key: `alert:${alert.id}`,
       when: alert.firstSeenAt,
       area: "Operations",
       summary: alert.reason,
       detail: alert.recommendedAction ?? "Open Operations and review this item.",
+      href: alert.eventId ? `/operations#event-${alert.eventId}` : "/operations",
+      dismissible: true,
     })),
     ...failedSyncRuns.map(run => ({
       key: `sync:${run.id}`,
       when: run.startedAt,
       area: "VSCO sync",
       summary: run.status === "PARTIAL" ? "A VSCO sync finished with missing items" : "A VSCO sync did not finish",
-      detail: run.errorSummary ?? `${run.itemsFailed} item${run.itemsFailed === 1 ? "" : "s"} failed during this run.`,
+      detail: latestSync?.status === "SUCCEEDED" && latestSync.itemsFailed === 0 && latestSync.startedAt > run.startedAt
+        ? `${run.errorSummary ?? `${run.itemsFailed} item${run.itemsFailed === 1 ? "" : "s"} failed during this run.`} Recovered: a later VSCO sync completed successfully.`
+        : run.errorSummary ?? `${run.itemsFailed} item${run.itemsFailed === 1 ? "" : "s"} failed during this run.`,
+      href: `/logs#sync-${run.id}`,
+      dismissible: Boolean(latestSync?.status === "SUCCEEDED" && latestSync.itemsFailed === 0 && latestSync.startedAt > run.startedAt),
     })),
     ...failedActions.map(action => ({
       key: `action:${action.id}`,
@@ -154,6 +226,8 @@ export async function getOperationOverview() {
       area: "Robot action",
       summary: `${action.reason}${action.person ? ` for ${action.person.displayName}` : ""}`,
       detail: action.lastError ?? "The action failed and needs review.",
+      href: "/actions",
+      dismissible: true,
     })),
     ...failedWebhooks.map(webhook => ({
       key: `webhook:${webhook.id}`,
@@ -161,6 +235,8 @@ export async function getOperationOverview() {
       area: `${webhook.provider} update`,
       summary: `Could not process ${webhook.type}`,
       detail: webhook.error ?? "The provider update failed.",
+      href: `/logs#webhook-${webhook.id}`,
+      dismissible: true,
     })),
     ...failedMessages.map(message => ({
       key: `message:${message.id}`,
@@ -168,6 +244,8 @@ export async function getOperationOverview() {
       area: `${message.channel === "SMS" ? "Text" : "Email"} delivery`,
       summary: `Message to ${message.person.displayName} was not delivered`,
       detail: message.failureReason ?? `Provider reported ${message.deliveryStatus.toLowerCase()}.`,
+      href: "/conversations",
+      dismissible: true,
     })),
     ...failedAgentRuns.map(run => ({
       key: `agent:${run.id}`,
@@ -175,11 +253,22 @@ export async function getOperationOverview() {
       area: "Scheduling assistant",
       summary: "The scheduling assistant could not finish a request",
       detail: run.error ?? "The assistant run failed.",
+      href: `/logs#agent-${run.id}`,
+      dismissible: true,
     })),
-  ].sort((a, b) => b.when.getTime() - a.when.getTime());
+  ].filter(error => !dismissedKeys.has(error.key)).sort((a, b) => b.when.getTime() - a.when.getTime());
+
+  const visibleCount = (prefix: string) => errors.filter(error => error.key.startsWith(prefix)).length;
+  const failedDeveloperAlertCount = visibleCount("developer-alert:");
+  const failedSyncRunCount = visibleCount("sync:");
+  const failedActionCount = visibleCount("action:");
+  const failedWebhookCount = visibleCount("webhook:");
+  const failedMessageCount = visibleCount("message:");
+  const failedAgentRunCount = visibleCount("agent:");
+  const openUrgentAlertCount = visibleCount("alert:");
 
   const summaries: OperationSummary[] = [
-    failedDeveloperAlerts.length > 0
+    failedDeveloperAlertCount > 0
       ? {
           key: "launch",
           label: "Production launch",
@@ -209,11 +298,11 @@ export async function getOperationOverview() {
       ? {
           key: "vsco",
           label: "VSCO schedule",
-          tone: failedSyncRuns.length ? "warning" : "good",
-          icon: failedSyncRuns.length ? "!" : "✓",
+          tone: failedSyncRunCount ? "warning" : "good",
+          icon: failedSyncRunCount ? "!" : "✓",
           summary: "The latest VSCO sync worked.",
-          detail: failedSyncRuns.length
-            ? `${failedSyncRuns.length} earlier run${failedSyncRuns.length === 1 ? "" : "s"} had errors in the last 7 days.`
+          detail: failedSyncRunCount
+            ? `${failedSyncRunCount} earlier run${failedSyncRunCount === 1 ? "" : "s"} had errors in the last 7 days.`
             : "Events and assignments are up to date.",
         }
       : {
@@ -227,42 +316,42 @@ export async function getOperationOverview() {
     {
       key: "delivery",
       label: "Email and text delivery",
-      tone: failedMessages.length ? "error" : "good",
-      icon: failedMessages.length ? "×" : "✓",
-      summary: failedMessages.length
-        ? `${failedMessages.length} message${failedMessages.length === 1 ? "" : "s"} failed in the last 7 days.`
+      tone: failedMessageCount ? "error" : "good",
+      icon: failedMessageCount ? "×" : "✓",
+      summary: failedMessageCount
+        ? `${failedMessageCount} message${failedMessageCount === 1 ? "" : "s"} failed in the last 7 days.`
         : "No failed contractor deliveries in the last 7 days.",
-      detail: failedMessages.length ? "Review the red delivery errors below." : "Provider delivery tracking is working.",
+      detail: failedMessageCount ? "Review the red delivery errors below." : "Provider delivery tracking is working.",
     },
     {
       key: "incoming",
       label: "Incoming replies",
-      tone: failedWebhooks.length ? "error" : "good",
-      icon: failedWebhooks.length ? "×" : "✓",
-      summary: failedWebhooks.length
-        ? `${failedWebhooks.length} provider update${failedWebhooks.length === 1 ? "" : "s"} could not be processed.`
+      tone: failedWebhookCount ? "error" : "good",
+      icon: failedWebhookCount ? "×" : "✓",
+      summary: failedWebhookCount
+        ? `${failedWebhookCount} provider update${failedWebhookCount === 1 ? "" : "s"} could not be processed.`
         : "Incoming replies are processing normally.",
-      detail: failedWebhooks.length ? "Review the webhook errors below." : "STOP, START, confirmations, and questions can be handled.",
+      detail: failedWebhookCount ? "Review the webhook errors below." : "STOP, START, confirmations, and questions can be handled.",
     },
     {
       key: "robot",
       label: "Robot actions",
-      tone: failedActions.length || failedAgentRuns.length ? "error" : "good",
-      icon: failedActions.length || failedAgentRuns.length ? "×" : "✓",
-      summary: failedActions.length || failedAgentRuns.length
-        ? `${failedActions.length + failedAgentRuns.length} robot task${failedActions.length + failedAgentRuns.length === 1 ? "" : "s"} need attention.`
+      tone: failedActionCount || failedAgentRunCount ? "error" : "good",
+      icon: failedActionCount || failedAgentRunCount ? "×" : "✓",
+      summary: failedActionCount || failedAgentRunCount
+        ? `${failedActionCount + failedAgentRunCount} robot task${failedActionCount + failedAgentRunCount === 1 ? "" : "s"} need attention.`
         : "The worker has no failed tasks.",
       detail: "This covers reminders, replies, and scheduling-assistant runs.",
     },
     {
       key: "attention",
       label: "Operations attention",
-      tone: openUrgentAlerts.length ? "error" : "good",
-      icon: openUrgentAlerts.length ? "×" : "✓",
-      summary: openUrgentAlerts.length
-        ? `${openUrgentAlerts.length} urgent item${openUrgentAlerts.length === 1 ? "" : "s"} need review.`
+      tone: openUrgentAlertCount ? "error" : "good",
+      icon: openUrgentAlertCount ? "×" : "✓",
+      summary: openUrgentAlertCount
+        ? `${openUrgentAlertCount} urgent item${openUrgentAlertCount === 1 ? "" : "s"} need review.`
         : "No urgent staffing or readiness alerts are open.",
-      detail: openUrgentAlerts.length ? "Open Operations to see the event and recommended next step." : "Upcoming events have no high-priority alerts.",
+      detail: openUrgentAlertCount ? "Open Operations to see the event and recommended next step." : "Upcoming events have no high-priority alerts.",
     },
   ];
 

@@ -138,6 +138,16 @@ function alertDetails(reason: string) {
 
 export async function reconcileEventReadiness(eventId: string, now = new Date()) {
   const event = await db.event.findUniqueOrThrow({ where: { id: eventId } });
+  if (event.internalNotes?.includes("[LAUNCH_CUTOFF_EXCLUDED]")) {
+    await db.operationalAlert.updateMany({
+      where: { eventId, status: "OPEN", deduplicationKey: { startsWith: `readiness:${eventId}:` } },
+      data: { status: "RESOLVED", resolvedAt: now },
+    });
+    return {
+      status: event.readinessStatus,
+      reasons: Array.isArray(event.readinessReasons) ? event.readinessReasons.map(String) : [],
+    };
+  }
   const previous = event.readinessStatus;
   const result = await calculateEventReadiness(eventId, now);
   await db.event.update({
