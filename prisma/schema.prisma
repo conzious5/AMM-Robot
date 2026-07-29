@@ -1,0 +1,368 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AdminRole {
+  OWNER
+  ADMIN
+}
+
+enum PersonRole {
+  PHOTOGRAPHER
+  VIDEOGRAPHER
+  BOTH
+}
+
+enum PreferredChannel {
+  EMAIL
+  SMS
+  BOTH
+}
+
+enum EventStatus {
+  SCHEDULED
+  CANCELED
+  COMPLETED
+}
+
+enum AssignmentRole {
+  PHOTOGRAPHER
+  VIDEOGRAPHER
+  ASSISTANT
+  OTHER
+}
+
+enum AssignmentSource {
+  VSCO
+  ADMIN
+  OVERRIDE
+}
+
+enum ConfirmationStatus {
+  NOT_READY
+  PENDING
+  CONFIRMED
+  DECLINED
+  NEEDS_ATTENTION
+  UNREACHABLE
+  CANCELED
+}
+
+enum Channel {
+  EMAIL
+  SMS
+  SYSTEM
+}
+
+enum ActionStatus {
+  PLANNED
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELED
+  SUPPRESSED
+  WAITING_FOR_APPROVAL
+}
+
+enum Direction {
+  INBOUND
+  OUTBOUND
+  INTERNAL
+}
+
+enum DeliveryStatus {
+  PLANNED
+  ACCEPTED
+  SENT
+  DELIVERED
+  FAILED
+  BOUNCED
+  COMPLAINED
+  RECEIVED
+  SUPPRESSED
+}
+
+enum ConversationStatus {
+  OPEN
+  CLOSED
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+}
+
+model Administrator {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         AdminRole @default(ADMIN)
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Person {
+  id                 String           @id @default(cuid())
+  vscoExternalId     String?          @unique
+  firstName          String
+  lastName           String
+  displayName        String
+  email              String?
+  normalizedEmail    String?          @unique
+  phone              String?          @unique
+  role               PersonRole
+  active             Boolean          @default(true)
+  timezone           String           @default("America/Denver")
+  preferredChannel   PreferredChannel @default(BOTH)
+  smsEligible        Boolean          @default(true)
+  emailEligible      Boolean          @default(true)
+  paused             Boolean          @default(false)
+  notes              String?
+  rawProviderPayload Json?
+  assignments        Assignment[]
+  conversations      Conversation[]
+  messages           Message[]
+  plannedActions     PlannedAction[]
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+}
+
+model Event {
+  id                 String          @id @default(cuid())
+  vscoEventId        String?         @unique
+  vscoJobId          String?
+  name               String
+  eventType          String          @default("Wedding")
+  startsAt           DateTime
+  endsAt             DateTime?
+  timezone           String
+  venueName          String?
+  address            String?
+  virtualUrl         String?
+  status             EventStatus     @default(SCHEDULED)
+  canceled           Boolean         @default(false)
+  paused             Boolean         @default(false)
+  rawProviderPayload Json?
+  lastSyncedAt       DateTime?
+  assignments        Assignment[]
+  plannedActions     PlannedAction[]
+  messages           Message[]
+  changeHistory      EventChange[]
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+}
+
+model EventChange {
+  id        String   @id @default(cuid())
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  field     String
+  oldValue  Json?
+  newValue  Json?
+  source    String
+  createdAt DateTime @default(now())
+}
+
+model Assignment {
+  id                   String              @id @default(cuid())
+  eventId              String
+  personId             String
+  event                Event               @relation(fields: [eventId], references: [id])
+  person               Person              @relation(fields: [personId], references: [id])
+  role                 AssignmentRole
+  source               AssignmentSource
+  externalAssignmentId String?             @unique
+  active               Boolean             @default(true)
+  paused               Boolean             @default(false)
+  assignedAt           DateTime            @default(now())
+  confirmationStatus   ConfirmationStatus  @default(NOT_READY)
+  confirmedAt          DateTime?
+  confirmationChannel  Channel?
+  declinedAt           DateTime?
+  declineReason        String?
+  needsAttention       Boolean             @default(false)
+  lastReminderAt       DateTime?
+  nextReminderAt       DateTime?
+  reminderCount        Int                 @default(0)
+  plannedActions       PlannedAction[]
+  messages             Message[]
+  confirmationTokens   ConfirmationToken[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  @@unique([eventId, personId, role])
+  @@index([confirmationStatus, active])
+}
+
+model ReminderPolicy {
+  id              String          @id @default(cuid())
+  name            String          @unique
+  active          Boolean         @default(true)
+  roleFilter      AssignmentRole?
+  offsetMinutes   Int
+  channel         Channel
+  attemptNumber   Int
+  honorQuietHours Boolean         @default(true)
+  escalate        Boolean         @default(false)
+  subjectTemplate String?
+  messageTemplate String
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model PlannedAction {
+  id             String       @id @default(cuid())
+  type           String
+  eventId        String?
+  assignmentId   String?
+  personId       String?
+  event          Event?       @relation(fields: [eventId], references: [id])
+  assignment     Assignment?  @relation(fields: [assignmentId], references: [id])
+  person         Person?      @relation(fields: [personId], references: [id])
+  channel        Channel
+  scheduledFor   DateTime
+  status         ActionStatus @default(PLANNED)
+  reason         String
+  messagePreview String
+  subjectPreview String?
+  idempotencyKey String       @unique
+  jobQueueId     String?
+  attemptCount   Int          @default(0)
+  lastError      String?
+  canceledAt     DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([status, scheduledFor])
+}
+
+model Conversation {
+  id             String             @id @default(cuid())
+  personId       String
+  person         Person             @relation(fields: [personId], references: [id])
+  channel        Channel
+  status         ConversationStatus @default(OPEN)
+  lastMessageAt  DateTime           @default(now())
+  needsAttention Boolean            @default(false)
+  agentSummary   String?
+  messages       Message[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@unique([personId, channel])
+}
+
+model Message {
+  id                 String         @id @default(cuid())
+  conversationId     String
+  personId           String
+  eventId            String?
+  assignmentId       String?
+  conversation       Conversation   @relation(fields: [conversationId], references: [id])
+  person             Person         @relation(fields: [personId], references: [id])
+  event              Event?         @relation(fields: [eventId], references: [id])
+  assignment         Assignment?    @relation(fields: [assignmentId], references: [id])
+  direction          Direction
+  channel            Channel
+  provider           String
+  providerMessageId  String?        @unique
+  sender             String
+  recipient          String
+  subject            String?
+  textContent        String
+  htmlContent        String?
+  deliveryStatus     DeliveryStatus
+  authorType         String
+  idempotencyKey     String?        @unique
+  sentAt             DateTime?
+  deliveredAt        DateTime?
+  receivedAt         DateTime?
+  failureReason      String?
+  rawProviderPayload Json?
+  createdAt          DateTime       @default(now())
+}
+
+model ConfirmationToken {
+  id           String     @id @default(cuid())
+  tokenHash    String     @unique
+  assignmentId String
+  assignment   Assignment @relation(fields: [assignmentId], references: [id])
+  expiresAt    DateTime
+  usedAt       DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime   @default(now())
+}
+
+model SyncRun {
+  id           String     @id @default(cuid())
+  provider     String
+  startedAt    DateTime   @default(now())
+  completedAt  DateTime?
+  status       SyncStatus @default(RUNNING)
+  cursor       String?
+  itemsFetched Int        @default(0)
+  itemsCreated Int        @default(0)
+  itemsUpdated Int        @default(0)
+  itemsSkipped Int        @default(0)
+  itemsFailed  Int        @default(0)
+  errorSummary String?
+  details      Json?
+}
+
+model WebhookEvent {
+  id              String    @id @default(cuid())
+  provider        String
+  providerEventId String
+  type            String
+  status          String    @default("QUEUED")
+  payload         Json
+  error           String?
+  receivedAt      DateTime  @default(now())
+  processedAt     DateTime?
+
+  @@unique([provider, providerEventId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorType  String
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String?
+  before     Json?
+  after      Json?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model AgentRun {
+  id             String   @id @default(cuid())
+  conversationId String?
+  model          String
+  redactedInput  Json
+  redactedOutput Json?
+  toolCalls      Json?
+  status         String
+  error          String?
+  createdAt      DateTime @default(now())
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

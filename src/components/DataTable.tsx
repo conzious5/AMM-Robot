@@ -1,0 +1,1 @@
+export function DataTable({ columns, rows }: { columns: string[]; rows: React.ReactNode[][] }) { return <table><thead><tr>{columns.map(c=><th key={c}>{c}</th>)}</tr></thead><tbody>{rows.map((r,i)=><tr key={i}>{r.map((v,j)=><td key={j}>{v}</td>)}</tr>)}</tbody></table>; }
