@@ -2,6 +2,10 @@ import { addMinutes, isBefore } from "date-fns";
 import { db } from "./db";
 import { nextAllowedTime } from "./quiet-hours";
 
+const activeActionStatuses = ["PLANNED", "QUEUED", "PROCESSING", "FAILED", "WAITING_FOR_APPROVAL"] as const;
+const administratorSkipReason = "Skipped by administrator";
+const waitingReason = "Waiting for previous reminder outcome";
+
 function renderTemplate(template: string, assignment: {
   role: string;
   event: { name: string; startsAt: Date; timezone: string; venueName: string | null; address: string | null };
@@ -21,33 +25,121 @@ function renderTemplate(template: string, assignment: {
     .replaceAll("{{confirmationUrl}}", "[secure confirmation link]");
 }
 
+export function reminderStepIsSatisfied(action: { status: string; lastError: string | null } | undefined) {
+  return action?.status === "COMPLETED" ||
+    (action?.status === "CANCELED" && action.lastError === administratorSkipReason);
+}
+
 export async function planAssignmentReminders(assignmentId: string, now = new Date()) {
-  const assignment = await db.assignment.findUniqueOrThrow({ where: { id: assignmentId }, include: { event: true, person: true } });
-  if (
-    !assignment.active ||
-    assignment.confirmationStatus === "CONFIRMED" ||
-    assignment.confirmationStatus === "CANCELED" ||
-    assignment.event.canceled ||
-    assignment.person.paused ||
-    assignment.paused ||
-    assignment.event.paused
-  ) return [];
-  const policies = await db.reminderPolicy.findMany({ where: { active: true, OR: [{ roleFilter: null }, { roleFilter: assignment.role }] }, orderBy: { attemptNumber: "asc" } });
-  const created = [];
-  for (const policy of policies) {
-    let when = addMinutes(assignment.event.startsAt, -policy.offsetMinutes);
-    if (isBefore(when, now) && policy.attemptNumber === 1 && isBefore(now, assignment.event.startsAt)) when = addMinutes(now, 5);
-    if (isBefore(when, now) || isBefore(assignment.event.startsAt, now)) continue;
-    if (policy.honorQuietHours) when = nextAllowedTime(when, assignment.person.timezone);
-    const key = `reminder:${assignment.id}:${policy.id}`;
-    const preview = renderTemplate(policy.messageTemplate, assignment);
-    const subject = policy.subjectTemplate ? renderTemplate(policy.subjectTemplate, assignment) : null;
-    const action = await db.plannedAction.upsert({
-      where: { idempotencyKey: key },
-      update: { scheduledFor: when, messagePreview: preview, subjectPreview: subject },
-      create: { type: policy.escalate ? "ESCALATE" : "REMINDER", eventId: assignment.eventId, assignmentId: assignment.id, personId: assignment.personId, channel: policy.channel, scheduledFor: when, reason: policy.name, messagePreview: preview, subjectPreview: subject, idempotencyKey: key },
+  const assignment = await db.assignment.findUniqueOrThrow({
+    where: { id: assignmentId },
+    include: { event: true, person: true },
+  });
+  const eligible =
+    assignment.active &&
+    !["CONFIRMED", "CANCELED"].includes(assignment.confirmationStatus) &&
+    !assignment.event.canceled &&
+    !assignment.person.paused &&
+    !assignment.paused &&
+    !assignment.event.paused &&
+    isBefore(now, assignment.event.startsAt);
+
+  if (!eligible) {
+    await db.plannedAction.updateMany({
+      where: { assignmentId, type: { in: ["REMINDER", "ESCALATE"] }, status: { in: [...activeActionStatuses] } },
+      data: { status: "CANCELED", canceledAt: now, lastError: "Assignment is no longer eligible for reminders" },
     });
-    created.push(action);
+    await db.assignment.update({ where: { id: assignmentId }, data: { nextReminderAt: null } });
+    return [];
   }
-  return created;
+
+  const policies = await db.reminderPolicy.findMany({
+    where: { active: true, OR: [{ roleFilter: null }, { roleFilter: assignment.role }] },
+    orderBy: { attemptNumber: "asc" },
+  });
+  const actions = await db.plannedAction.findMany({
+    where: { assignmentId, type: { in: ["REMINDER", "ESCALATE"] } },
+  });
+  const actionByPolicy = new Map(actions.map(action => [action.idempotencyKey, action]));
+  const nextPolicy = policies.find(policy =>
+    !reminderStepIsSatisfied(actionByPolicy.get(`reminder:${assignment.id}:${policy.id}`))
+  );
+
+  if (!nextPolicy) {
+    await db.plannedAction.updateMany({
+      where: { assignmentId, type: { in: ["REMINDER", "ESCALATE"] }, status: { in: [...activeActionStatuses] } },
+      data: { status: "CANCELED", canceledAt: now, lastError: "Reminder sequence completed" },
+    });
+    await db.assignment.update({
+      where: { id: assignmentId },
+      data: {
+        nextReminderAt: null,
+        reminderCount: actions.filter(action => action.status === "COMPLETED").length,
+      },
+    });
+    return [];
+  }
+
+  const nextKey = `reminder:${assignment.id}:${nextPolicy.id}`;
+  await db.plannedAction.updateMany({
+    where: {
+      assignmentId,
+      type: { in: ["REMINDER", "ESCALATE"] },
+      idempotencyKey: { not: nextKey },
+      status: { in: [...activeActionStatuses] },
+    },
+    data: { status: "CANCELED", canceledAt: now, lastError: waitingReason },
+  });
+
+  let when = addMinutes(assignment.event.startsAt, -nextPolicy.offsetMinutes);
+  if (isBefore(when, now)) when = addMinutes(now, 5);
+  if (nextPolicy.honorQuietHours) when = nextAllowedTime(when, assignment.person.timezone);
+
+  const preview = renderTemplate(nextPolicy.messageTemplate, assignment);
+  const subject = nextPolicy.subjectTemplate
+    ? renderTemplate(nextPolicy.subjectTemplate, assignment)
+    : null;
+  const existing = actionByPolicy.get(nextKey);
+  const action = await db.plannedAction.upsert({
+    where: { idempotencyKey: nextKey },
+    update: {
+      scheduledFor: when,
+      messagePreview: preview,
+      subjectPreview: subject,
+      reason: nextPolicy.name,
+      channel: nextPolicy.channel,
+      ...(existing?.status === "CANCELED"
+        ? { status: "PLANNED" as const, canceledAt: null, lastError: null }
+        : {}),
+    },
+    create: {
+      type: nextPolicy.escalate ? "ESCALATE" : "REMINDER",
+      eventId: assignment.eventId,
+      assignmentId: assignment.id,
+      personId: assignment.personId,
+      channel: nextPolicy.channel,
+      scheduledFor: when,
+      reason: nextPolicy.name,
+      messagePreview: preview,
+      subjectPreview: subject,
+      idempotencyKey: nextKey,
+    },
+  });
+  await db.assignment.update({
+    where: { id: assignmentId },
+    data: {
+      nextReminderAt: when,
+      reminderCount: actions.filter(candidate => candidate.status === "COMPLETED").length,
+    },
+  });
+  return [action];
+}
+
+export async function skipReminderAction(actionId: string) {
+  const action = await db.plannedAction.update({
+    where: { id: actionId },
+    data: { status: "CANCELED", canceledAt: new Date(), lastError: administratorSkipReason },
+  });
+  if (action.assignmentId) await planAssignmentReminders(action.assignmentId);
+  return action;
 }

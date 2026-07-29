@@ -66,6 +66,8 @@ The sync supports cursor pagination, exponential retry for 429/5xx responses, hi
 
 For this application, a booked gig is a VSCO ceremony whose job has an assigned photographer or videographer. Lead calendar items and ceremonies without a production assignment are skipped. Older duplicate ceremony rows sharing the same VSCO job are automatically archived, along with their pending reminders.
 
+Reminder actions are sequential. Each unconfirmed assignment has at most one active reminder action. A later escalation is planned only after the current step is successfully sent (or an administrator explicitly skips it) and the assignment is still unconfirmed. Confirmation cancels the remaining sequence.
+
 ## Resend setup
 
 1. Verify the sending domain and set `EMAIL_FROM`.

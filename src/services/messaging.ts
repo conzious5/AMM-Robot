@@ -2,12 +2,13 @@ import { Resend } from "resend";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { issueConfirmationToken } from "@/lib/confirmation";
+import { planAssignmentReminders } from "@/lib/reminders";
 import { helpMenu } from "@/services/inbound";
 
 const logoUrl = "https://authentic-moments.com/wp-content/uploads/2023/12/Authentic-Moments-Website-Logo-v3.png";
 
 export async function sendPlannedAction(actionId: string) {
-  return db.$transaction(async tx => {
+  const result = await db.$transaction(async tx => {
     const action = await tx.plannedAction.findUniqueOrThrow({ where: { id: actionId }, include: { assignment: { include: { event: true, person: true } }, person: true } });
     if (!["PLANNED", "QUEUED", "FAILED"].includes(action.status)) return action;
     const assignment = action.assignment;
@@ -69,9 +70,24 @@ export async function sendPlannedAction(actionId: string) {
       providerId = result.data?.id ?? result.id ?? "";
       if (!providerId) throw new Error("Quo response did not include a message ID");
     } else throw new Error("Unsupported channel");
-    await tx.message.create({ data: { conversationId: conversation.id, personId: person.id, eventId: assignment?.eventId, assignmentId: assignment?.id, direction: "OUTBOUND", channel: action.channel, provider: action.channel === "EMAIL" ? "RESEND" : "QUO", providerMessageId: providerId, sender: action.channel === "EMAIL" ? config.EMAIL_FROM : config.QUO_PHONE_NUMBER ?? "", recipient, subject: action.subjectPreview, textContent: body, deliveryStatus: "ACCEPTED", authorType: action.type === "AGENT_REPLY" ? "SCHEDULING_AGENT" : "REMINDER_SYSTEM", idempotencyKey: action.idempotencyKey, sentAt: new Date() } });
+    const sentAt = new Date();
+    await tx.message.create({ data: { conversationId: conversation.id, personId: person.id, eventId: assignment?.eventId, assignmentId: assignment?.id, direction: "OUTBOUND", channel: action.channel, provider: action.channel === "EMAIL" ? "RESEND" : "QUO", providerMessageId: providerId, sender: action.channel === "EMAIL" ? config.EMAIL_FROM : config.QUO_PHONE_NUMBER ?? "", recipient, subject: action.subjectPreview, textContent: body, deliveryStatus: "ACCEPTED", authorType: action.type === "AGENT_REPLY" ? "SCHEDULING_AGENT" : "REMINDER_SYSTEM", idempotencyKey: action.idempotencyKey, sentAt } });
+    if (assignment && ["REMINDER", "ESCALATE"].includes(action.type)) {
+      await tx.assignment.update({
+        where: { id: assignment.id },
+        data: { lastReminderAt: sentAt, nextReminderAt: null, reminderCount: { increment: 1 } },
+      });
+    }
     return tx.plannedAction.update({ where: { id: action.id }, data: { status: "COMPLETED", completedAt: new Date(), attemptCount: { increment: 1 } } });
   });
+  if (
+    result.assignmentId &&
+    result.status === "COMPLETED" &&
+    ["REMINDER", "ESCALATE"].includes(result.type)
+  ) {
+    await planAssignmentReminders(result.assignmentId);
+  }
+  return result;
 }
 
 export async function sendReminderPreview(channel: "EMAIL" | "SMS" | "BOTH" = "BOTH") {
