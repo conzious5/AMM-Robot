@@ -45,6 +45,7 @@ export class VscoWorkspaceProvider {
   private readonly contacts = new Map<string, z.infer<typeof OfficialContact>>();
   private readonly roles = new Map<string, z.infer<typeof OfficialJobRole>>();
   private readonly jobContacts = new Map<string, z.infer<typeof OfficialJobContact>[]>();
+  private readonly ceremonyJobs = new Set<string>();
   private assignmentsLoaded = false;
 
   async *events(params: { from: Date; to: Date; cursor?: string }) {
@@ -63,10 +64,13 @@ export class VscoWorkspaceProvider {
       const normalized: NormalizedVscoEvent[] = [];
       for (const input of body.items) {
         const event = OfficialEvent.parse(input);
+        if (!event.name?.trim().toLowerCase().includes("ceremony")) continue;
+        if (event.jobId && this.ceremonyJobs.has(event.jobId)) continue;
         if (!event.startUtc) continue;
         const startsAt = new Date(event.startUtc);
         if (startsAt < params.from || startsAt > params.to) continue;
         const assignments = event.jobId ? await this.assignments(event.jobId) : [];
+        if (event.jobId) this.ceremonyJobs.add(event.jobId);
         const address = event.location?.address;
         normalized.push({
           externalId: event.id,
