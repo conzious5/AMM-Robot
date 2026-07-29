@@ -4,7 +4,8 @@ import { reconcileVscoSyncFailureAlert, runVscoSync } from "@/services/sync";
 import { reconcileAllEventReadiness } from "@/services/readiness";
 import { inspectVscoTaskCapabilities, refreshCalculatedTaskStatuses } from "@/services/tasks";
 import { maybeSendProjectManagerDailyBrief } from "@/services/project-manager";
-import { activatePreparedProductionLaunch } from "@/services/go-live";
+import { communicationServiceIsActive } from "@/services/service-control";
+import { env } from "@/lib/env";
 
 async function main() {
   await runVscoSync();
@@ -12,8 +13,9 @@ async function main() {
   await inspectVscoTaskCapabilities();
   await refreshCalculatedTaskStatuses();
   await reconcileAllEventReadiness();
-  await activatePreparedProductionLaunch();
   await maybeSendProjectManagerDailyBrief();
+  const queueCommunications = env().TEST_MODE || await communicationServiceIsActive();
+  if (!queueCommunications) return;
   const actions = await db.plannedAction.findMany({ where: { status: "PLANNED", scheduledFor: { lte: new Date(Date.now() + 15 * 60000) } } });
   for (const action of actions) {
     const delay = Math.max(0, action.scheduledFor.getTime() - Date.now());

@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
+import { resolveCommunicationServiceStatus } from "@/services/service-control";
 
 export type OperationTone = "good" | "warning" | "error" | "neutral";
 
@@ -118,6 +119,7 @@ export async function getOperationOverview() {
   const since = new Date(Date.now() - 7 * 86400000);
   const [
     launchSetting,
+    serviceSetting,
     latestSync,
     failedActions,
     failedWebhooks,
@@ -129,6 +131,7 @@ export async function getOperationOverview() {
     dismissalSettings,
   ] = await Promise.all([
     db.setting.findUnique({ where: { key: "production-launch" } }),
+    db.setting.findUnique({ where: { key: "communication-service" } }),
     db.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     db.plannedAction.findMany({
       where: { status: "FAILED" },
@@ -185,6 +188,7 @@ export async function getOperationOverview() {
   const relevantOpenUrgentAlerts = openUrgentAlerts.filter(alert => !alert.event?.internalNotes?.includes("[LAUNCH_CUTOFF_EXCLUDED]"));
   const launch = valueRecord(launchSetting?.value);
   const launchStatus = typeof launch.status === "string" ? launch.status : "NOT_PREPARED";
+  const serviceStatus = resolveCommunicationServiceStatus(serviceSetting?.value, launchSetting?.value);
   const config = env();
 
   const errors: OperationError[] = [
@@ -288,11 +292,13 @@ export async function getOperationOverview() {
           }
         : {
             key: "launch",
-            label: "Production launch",
-            tone: launchStatus === "LIVE" ? "good" : "error",
-            icon: launchStatus === "LIVE" ? "✓" : "×",
-            summary: launchStatus === "LIVE" ? "Production messaging is live." : "Production mode is on, but launch is not active.",
-            detail: launchStatus === "LIVE" ? "The prepared communication plan is active." : "Real sends remain blocked by the launch safety guard.",
+            label: "Communication service",
+            tone: serviceStatus === "ACTIVE" ? "good" : "warning",
+            icon: serviceStatus === "ACTIVE" ? "✓" : "!",
+            summary: serviceStatus === "ACTIVE" ? "Production messaging is active." : "Messaging is suspended by the owner.",
+            detail: serviceStatus === "ACTIVE"
+              ? "Individual provider errors are logged without stopping the service."
+              : "Use the top-right Activate switch when you want automated sends to resume.",
           },
     latestSync?.status === "SUCCEEDED" && latestSync.itemsFailed === 0
       ? {

@@ -4,6 +4,7 @@ import { env } from "@/lib/env";
 import { issueConfirmationToken } from "@/lib/confirmation";
 import { planAssignmentReminders } from "@/lib/reminders";
 import { helpMenu } from "@/services/inbound";
+import { resolveCommunicationServiceStatus } from "@/services/service-control";
 
 const logoUrl = "https://authentic-moments.com/wp-content/uploads/2023/12/Authentic-Moments-Website-Logo-v3.png";
 
@@ -18,12 +19,16 @@ export async function sendPlannedAction(actionId: string) {
     }
     const config = env();
     if (!config.TEST_MODE) {
-      const launch = await tx.setting.findUnique({ where: { key: "production-launch" } });
+      const [launch, service] = await Promise.all([
+        tx.setting.findUnique({ where: { key: "production-launch" } }),
+        tx.setting.findUnique({ where: { key: "communication-service" } }),
+      ]);
       const launchState = launch?.value as { status?: string } | null;
-      if (launchState?.status !== "LIVE") {
+      const serviceStatus = resolveCommunicationServiceStatus(service?.value, launch?.value);
+      if (!launchState || serviceStatus !== "ACTIVE") {
         return tx.plannedAction.update({
           where: { id: action.id },
-          data: { status: "PLANNED", jobQueueId: null, lastError: "Production send held until the prepared launch is activated" },
+          data: { status: "PLANNED", jobQueueId: null, lastError: "Communication service is suspended by the owner" },
         });
       }
     }

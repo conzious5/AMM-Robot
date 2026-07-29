@@ -11,6 +11,7 @@ import { assertPermission } from "@/lib/permissions";
 import { inspectVscoTaskCapabilities, refreshCalculatedTaskStatuses } from "@/services/tasks";
 import { reconcileAllEventReadiness } from "@/services/readiness";
 import { getProductionLaunchState, prepareProductionLaunch } from "@/services/go-live";
+import { getCommunicationServiceState } from "@/services/service-control";
 
 async function update(data: FormData) {
   "use server";
@@ -145,13 +146,14 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
     );
   }
   const config = env();
-  const [policies, syncRun, managers, roleRules, capabilities, launchState] = await Promise.all([
+  const [policies, syncRun, managers, roleRules, capabilities, launchState, serviceState] = await Promise.all([
     db.reminderPolicy.findMany({ orderBy: { attemptNumber: "asc" } }),
     db.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     db.administrator.findMany({ where: { role: "PROJECT_MANAGER" }, orderBy: { name: "asc" } }),
     db.requiredRoleRule.findMany({ orderBy: [{ jobType: "asc" }, { role: "asc" }] }),
     db.providerCapability.findMany({ where: { provider: "VSCO" }, orderBy: { capability: "asc" } }),
     getProductionLaunchState(),
+    getCommunicationServiceState(),
   ]);
   const testReady = Boolean(
     config.TEST_MODE &&
@@ -170,7 +172,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
           <h3>Safety</h3>
           <p>Test mode: <b>{String(config.TEST_MODE)}</b></p>
           <p>Global environment pause: <b>{String(config.GLOBAL_COMMUNICATIONS_PAUSED)}</b></p>
-          <p className="muted">Production mode requires changing Railway variables and redeploying.</p>
+          <p>Communication service: <b>{serviceState.status}</b></p>
+          <p className="muted">Use the owner switch in the top right to suspend or activate automated outbound messages.</p>
         </div>
         <div className="card">
           <h3>VSCO</h3>
@@ -204,7 +207,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
             <button>Prepare one-time production launch</button>
           </form>
         )}
-        <p className="muted">Preparation is idempotent and does not send while test mode is enabled. Production delivery remains blocked until the prepared plan is activated after Railway test mode is disabled.</p>
+        <p className="muted">Preparation remains idempotent. After the one-time launch is prepared, the owner-controlled service switch determines whether automated outbound messages may send.</p>
       </div>
       <h2>Project manager</h2>
       {managers.map(manager => (

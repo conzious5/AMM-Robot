@@ -10,6 +10,7 @@ import { isVscoTaskWebhookAuthorized } from "@/lib/vsco-task-webhook";
 import { assignmentIsInsideLaunchExclusion, contractorLaunchEligibility } from "@/services/go-live";
 import { administratorInviteIsUsable, administratorInviteKey } from "@/lib/admin-invite";
 import { isDismissibleOperationErrorKey, operationErrorDismissalSettingKey } from "@/services/operation-status";
+import { resolveCommunicationServiceStatus } from "@/services/service-control";
 
 const base = (overrides: Partial<ReadinessInput> = {}): ReadinessInput => ({
   canceled: false,
@@ -62,6 +63,13 @@ describe("project-manager acceptance", () => {
   it("prevents project managers from changing security or production controls", () => {
     expect(hasPermission("PROJECT_MANAGER", "settings:security")).toBe(false);
     expect(hasPermission("PROJECT_MANAGER", "production:enable")).toBe(false);
+  });
+
+  it("uses only the explicit owner service switch after it is created", () => {
+    expect(resolveCommunicationServiceStatus(undefined, { status: "LIVE" })).toBe("ACTIVE");
+    expect(resolveCommunicationServiceStatus(undefined, { status: "PREPARED" })).toBe("SUSPENDED");
+    expect(resolveCommunicationServiceStatus({ status: "ACTIVE" }, { status: "PREPARED" })).toBe("ACTIVE");
+    expect(resolveCommunicationServiceStatus({ status: "SUSPENDED" }, { status: "LIVE" })).toBe("SUSPENDED");
   });
 
   it("stores administrator setup tokens only as stable hashes", () => {
