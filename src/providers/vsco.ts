@@ -30,8 +30,32 @@ export type NormalizedVscoEvent = {
   externalId: string; jobId?: string; name: string; eventType: string; startsAt: Date; endsAt?: Date;
   timezone: string; venueName?: string; address?: string; canceled: boolean; assignments: z.infer<typeof Assignment>[] | null; raw: unknown;
 };
+export type VscoTimelineFile = {
+  id: string;
+  url: string;
+  mimeType?: string;
+  modified?: string;
+};
 export const isProductionAssignment = (assignment: z.infer<typeof Assignment>) =>
   /\b(photo(?:grapher|graphy)?|video(?:grapher|graphy)?)\b/i.test(assignment.role);
+export const isTimelineFile = (file: {
+  name?: string | null;
+  filename?: string | null;
+  description?: string | null;
+  mimeType?: string | null;
+  url?: string | null;
+}) => {
+  const label = [file.name, file.filename, file.description].filter(Boolean).join(" ");
+  const matchesTimeline = /\btimeline\b|\b(?:job[\s_-]*)?day[\s_-]*sheet\b/i.test(label);
+  const allowedMimeTypes = new Set([
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ]);
+  return matchesTimeline && Boolean(file.url) && Boolean(file.mimeType && allowedMimeTypes.has(file.mimeType));
+};
 
 export function normalizeVscoEvent(input: unknown): NormalizedVscoEvent {
   const value = Event.parse(input);
@@ -99,6 +123,25 @@ export class VscoWorkspaceProvider {
       yield { events: normalized, cursor: page < totalPages ? String(page + 1) : undefined };
       page++;
     } while (page <= totalPages);
+  }
+
+  async timelineFiles(jobId: string): Promise<VscoTimelineFile[]> {
+    const files = await this.collection("/file", { jobId });
+    const matchingFiles: z.infer<typeof OfficialFile>[] = [];
+    for (const input of files.items) {
+      const parsed = OfficialFile.safeParse(input);
+      if (parsed.success && isTimelineFile(parsed.data)) matchingFiles.push(parsed.data);
+    }
+    return matchingFiles
+      .sort((a, b) => modifiedTime(b.modified) - modifiedTime(a.modified))
+      .filter((file, index, all) => all.findIndex(candidate => candidate.url === file.url) === index)
+      .slice(0, 1)
+      .map(file => ({
+        id: file.id,
+        url: file.url!,
+        mimeType: file.mimeType ?? undefined,
+        modified: file.modified ?? undefined,
+      }));
   }
 
   private async assignments(jobId: string) {
@@ -249,3 +292,18 @@ const OfficialJobRole = z.object({
   name: z.string(),
   kind: z.string().nullable().optional(),
 }).passthrough();
+
+const OfficialFile = z.object({
+  id: z.string(),
+  name: z.string().nullable().optional(),
+  filename: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  mimeType: z.string().nullable().optional(),
+  url: z.string().url().nullable().optional(),
+  modified: z.string().nullable().optional(),
+}).passthrough();
+
+const modifiedTime = (value?: string | null) => {
+  const parsed = Date.parse(value ?? "");
+  return Number.isNaN(parsed) ? 0 : parsed;
+};

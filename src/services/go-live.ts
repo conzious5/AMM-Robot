@@ -7,7 +7,7 @@ import { planAssignmentReminders } from "@/lib/reminders";
 import { notifySystemDeveloper } from "@/services/developer-alerts";
 
 const launchSettingKey = "production-launch";
-const introText = "Hi {{firstName}}—Authentic Moments here. We’re launching our new crew reminder number. You’ll receive event reminders and can reply SCHEDULE for upcoming ceremonies, LOCATION for venue details, HOURS for coverage, or HELP for options. Reply STOP to opt out.";
+const introText = "Hi {{firstName}}—Authentic Moments here. We’re launching our new crew reminder number. You’ll receive event reminders and can reply SCHEDULE for upcoming ceremonies, DETAILS for assignment details and timeline links, TIMELINE for the latest day sheet, LOCATION for venue details, HOURS for coverage, or HELP for options. Reply STOP to opt out.";
 
 type LaunchState = {
   status: "PREPARED" | "LIVE";

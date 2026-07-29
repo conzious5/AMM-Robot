@@ -1,13 +1,15 @@
 import { ConfirmationStatus } from "@prisma/client";
 import { db } from "@/lib/db";
+import { log } from "@/lib/log";
 import { reconcileEventReadiness } from "@/services/readiness";
+import { VscoWorkspaceProvider } from "@/providers/vsco";
 
 const confirmWords = /^(confirm|confirmed|yes|yep|i(?:'|’)ll be there)[.! ]*$/i;
 const declineWords = /^(decline|cannot work|can't work|no)[.! ]*$/i;
 const financialWords = /\b(pay|paid|payment|rate|rates|compensation|invoice|billing|price|pricing|cost|fee|fees|money|financial|contract amount|1099|tax)\b/i;
 const standardPayWords = /\b(pay|paid|rate|rates|compensation|additional hours?|extra hours?|mileage|miles?|travel reimbursement)\b/i;
 
-export const helpMenu = "Authentic Moments contractor help:\nCONFIRM — confirm your next assignment\nSCHEDULE — upcoming ceremony dates\nDETAILS — role, date, venue, and times\nLOCATION — venue and address\nHOURS — available start/end times\nPAY — standard rates and mileage policy\nHELP — show this menu\nYou can also ask a question in your own words. Reply STOP to opt out.";
+export const helpMenu = "Authentic Moments contractor help:\nCONFIRM — confirm your next assignment\nSCHEDULE — upcoming ceremony dates\nDETAILS — role, date, venue, times, and timeline link\nTIMELINE — latest timeline or day sheet\nLOCATION — venue and address\nHOURS — available start/end times\nPAY — standard rates and mileage policy\nHELP — show this menu\nYou can also ask a question in your own words. Reply STOP to opt out.";
 export const isFinancialQuestion = (text: string) => financialWords.test(text);
 export const isStandardPayQuestion = (text: string) => standardPayWords.test(text);
 export const standardPayReply = (text = "") => {
@@ -17,7 +19,7 @@ export const standardPayReply = (text = "") => {
     : "";
   return `Authentic Moments standard contractor rates:\n8 hours — $950\n6 hours — $750\n3 hours — $450\n1 hour — $350\nAdditional hours — $125/hour\nTravel: $0.68/mile for total trip mileage over 120 miles; reimbursement is (total trip miles - 120) × $0.68.${calculation}\nThis number cannot access individual payouts, invoices, client pricing, or contract amounts.`;
 };
-export type Intent = "CONFIRM" | "DECLINE" | "STOP" | "START" | "HELP" | "SCHEDULE" | "DETAILS" | "LOCATION" | "HOURS" | "PAY" | "FINANCIAL" | "NATURAL_LANGUAGE";
+export type Intent = "CONFIRM" | "DECLINE" | "STOP" | "START" | "HELP" | "SCHEDULE" | "DETAILS" | "TIMELINE" | "LOCATION" | "HOURS" | "PAY" | "FINANCIAL" | "NATURAL_LANGUAGE";
 export const deterministicIntent = (text: string): Intent => {
   const value = text.trim();
   if (/^stop$/i.test(value)) return "STOP";
@@ -25,6 +27,7 @@ export const deterministicIntent = (text: string): Intent => {
   if (/^pay$/i.test(value) || isStandardPayQuestion(value)) return "PAY";
   if (isFinancialQuestion(value)) return "FINANCIAL";
   if (/^(help|menu|options)$/i.test(value)) return "HELP";
+  if (/\b(timeline|day[\s_-]*sheet)\b/i.test(value)) return "TIMELINE";
   if (/\b(detail|details|assignment info|event info|ceremony info)\b/i.test(value)) return "DETAILS";
   if (/\b(schedule|upcoming|next (wedding|event|ceremony)|what (weddings|events|ceremonies))\b/i.test(value)) return "SCHEDULE";
   if (/\b(location|venue|address|where)\b/i.test(value)) return "LOCATION";
@@ -40,7 +43,7 @@ export async function handleDeterministic(personId: string, text: string, channe
   if (intent === "HELP") return helpMenu;
   if (intent === "PAY") return standardPayReply(text);
   if (intent === "FINANCIAL") return "For privacy and security, this number can only share Authentic Moments' published standard contractor rates and mileage policy. It cannot access individual payouts, invoices, client pricing, billing, taxes, or contract amounts. Reply PAY for the standard rate card.";
-  if (["SCHEDULE", "DETAILS", "LOCATION", "HOURS"].includes(intent)) {
+  if (["SCHEDULE", "DETAILS", "TIMELINE", "LOCATION", "HOURS"].includes(intent)) {
     const assignments = await db.assignment.findMany({
       where: { personId, active: true, event: { startsAt: { gt: new Date() }, canceled: false } },
       include: { event: true },
@@ -54,10 +57,16 @@ export async function handleDeterministic(personId: string, text: string, channe
       ).join("\n");
     }
     const assignment = assignments[0]!;
+    if (intent === "TIMELINE") {
+      const timeline = await timelineReply(assignment.event.vscoJobId, assignment.event.name);
+      if (timeline.unavailable) return "Timeline lookup is temporarily unavailable. Please try again later.";
+      return timeline.reply ?? `No timeline or day sheet is available in VSCO yet for ${assignment.event.name}.`;
+    }
     if (intent === "DETAILS") {
       const location = [assignment.event.venueName, assignment.event.address].filter(Boolean).join(", ") || "location not available in VSCO";
       const end = assignment.event.endsAt ? formatDateTime(assignment.event.endsAt, assignment.event.timezone) : "end time not available in VSCO";
-      return `${assignment.event.name}\nRole: ${assignment.role.toLowerCase()}\nStart: ${formatDateTime(assignment.event.startsAt, assignment.event.timezone)}\nEnd: ${end}\nLocation: ${location}\nConfirmation: ${assignment.confirmationStatus.toLowerCase().replaceAll("_", " ")}`;
+      const timeline = await timelineReply(assignment.event.vscoJobId, assignment.event.name);
+      return `${assignment.event.name}\nRole: ${assignment.role.toLowerCase()}\nStart: ${formatDateTime(assignment.event.startsAt, assignment.event.timezone)}\nEnd: ${end}\nLocation: ${location}\nConfirmation: ${assignment.confirmationStatus.toLowerCase().replaceAll("_", " ")}${timeline.reply ? `\n${timeline.reply}` : ""}`;
     }
     if (intent === "LOCATION") {
       const location = [assignment.event.venueName, assignment.event.address].filter(Boolean).join(", ");
@@ -81,6 +90,18 @@ export async function handleDeterministic(personId: string, text: string, channe
   ]);
   await reconcileEventReadiness(assignment.eventId);
   return intent === "CONFIRM" ? `Confirmed — you are set for ${assignment.event.name} on ${assignment.event.startsAt.toLocaleDateString("en-US", { dateStyle: "long", timeZone: assignment.event.timezone })}.` : "Your decline was recorded and an administrator has been alerted.";
+}
+
+async function timelineReply(vscoJobId: string | null, eventName: string) {
+  if (!vscoJobId) return { reply: null, unavailable: false };
+  try {
+    const files = await new VscoWorkspaceProvider().timelineFiles(vscoJobId);
+    const file = files[0];
+    return { reply: file ? `Timeline for ${eventName}: ${file.url}` : null, unavailable: false };
+  } catch (error) {
+    log.warn({ error, vscoJobId }, "Timeline lookup failed");
+    return { reply: null, unavailable: true };
+  }
 }
 
 function formatDate(value: Date, timezone: string) {
