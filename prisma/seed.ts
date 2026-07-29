@@ -6,7 +6,16 @@ const initialSms = "Hi {{firstName}}, this is Authentic Moments. Please confirm 
 const reminderSms = "Authentic Moments reminder: We still need confirmation for your {{role}} assignment on {{eventDate}}. Reply CONFIRM or use: {{confirmationUrl}}";
 async function main() {
   const hash = process.env.ADMIN_PASSWORD_HASH || await bcrypt.hash("change-me-before-production", 12);
-  await db.administrator.upsert({ where: { email: (process.env.ADMIN_EMAIL || "admin@example.com").toLowerCase() }, update: {}, create: { name: "Authentic Moments Administrator", email: (process.env.ADMIN_EMAIL || "admin@example.com").toLowerCase(), passwordHash: hash, role: "OWNER" } });
+  await db.administrator.upsert({
+    where: { email: (process.env.ADMIN_EMAIL || "admin@example.com").toLowerCase() },
+    update: { passwordHash: hash, active: true },
+    create: {
+      name: "Authentic Moments Administrator",
+      email: (process.env.ADMIN_EMAIL || "admin@example.com").toLowerCase(),
+      passwordHash: hash,
+      role: "OWNER",
+    },
+  });
   const policies = [
     ["Initial email",43200,"EMAIL",1,initialEmail,"Please confirm your {{role}} assignment for {{eventDate}}",false],
     ["Initial SMS",43200,"SMS",1,initialSms,null,false],["14-day reminder",20160,"EMAIL",2,initialEmail,"Reminder: Please confirm your {{eventDate}} assignment",false],
