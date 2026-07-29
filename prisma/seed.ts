@@ -5,10 +5,13 @@ const initialEmail = "Please confirm your {{role}} assignment for {{eventDate}}"
 const initialSms = "Hi {{firstName}}, this is Authentic Moments. Please confirm your {{role}} assignment for {{eventName}} on {{eventDate}} at {{venueName}}. Reply CONFIRM or use this secure link: {{confirmationUrl}}";
 const reminderSms = "Authentic Moments reminder: We still need confirmation for your {{role}} assignment on {{eventDate}}. Reply CONFIRM or use: {{confirmationUrl}}";
 async function main() {
-  const hash = process.env.ADMIN_PASSWORD
-    ? await bcrypt.hash(process.env.ADMIN_PASSWORD, 12)
+  const configuredPassword = process.env.ADMIN_PASSWORD_B64
+    ? Buffer.from(process.env.ADMIN_PASSWORD_B64, "base64").toString("utf8")
+    : process.env.ADMIN_PASSWORD;
+  const hash = configuredPassword
+    ? await bcrypt.hash(configuredPassword, 12)
     : process.env.ADMIN_PASSWORD_HASH || await bcrypt.hash("change-me-before-production", 12);
-  if (process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD_HASH) {
+  if (configuredPassword || process.env.ADMIN_PASSWORD_HASH) {
     await db.administrator.updateMany({
       where: { role: "OWNER" },
       data: { passwordHash: hash, active: true },

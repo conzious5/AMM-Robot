@@ -9,8 +9,11 @@ const key = () => new TextEncoder().encode(env().AUTH_SECRET);
 export async function signIn(email: string, password: string) {
   const config = env();
   const admin = await db.administrator.findUnique({ where: { email: email.toLowerCase() } });
-  const validPassword = config.ADMIN_PASSWORD
-    ? password === config.ADMIN_PASSWORD
+  const configuredPassword = config.ADMIN_PASSWORD_B64
+    ? Buffer.from(config.ADMIN_PASSWORD_B64, "base64").toString("utf8")
+    : config.ADMIN_PASSWORD;
+  const validPassword = configuredPassword
+    ? password === configuredPassword
     : admin
       ? await bcrypt.compare(password, admin.passwordHash)
       : false;
