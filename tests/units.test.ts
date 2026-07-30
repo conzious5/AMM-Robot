@@ -9,6 +9,7 @@ import { reminderStepIsSatisfied } from "@/lib/reminders";
 import { plainStatus } from "@/services/operation-status";
 import { brandedEmailHtml } from "@/services/messaging";
 import { isActiveInboundContractor } from "@/lib/inbound-identity";
+import { renderGroundedScheduleReply, safeScheduleRange } from "@/services/agent";
 
 describe("VSCO normalization",()=>{it("preserves offset and assignments",()=>{const x=normalizeVscoEvent({id:12,name:"Wedding",start:"2026-08-12T15:00:00-06:00",timezone:"America/Denver",venue:{name:"Manor"},assignments:[{id:4,role:"Videographer",teamMember:{id:8,firstName:"A",lastName:"B",email:"a@example.com"}}]});expect(x.externalId).toBe("12");expect(x.startsAt.toISOString()).toBe("2026-08-12T21:00:00.000Z");expect(x.assignments?.[0].teamMember.id).toBe("8")});it("reports missing assignments as null",()=>expect(normalizeVscoEvent({id:"1",name:"W",start:"2026-08-12T15:00:00Z"}).assignments).toBeNull())});
 describe("booked gig detection",()=>{it.each(["Photographer","Lead Photographer","Videographer","Video"])("%s is production",role=>expect(isProductionAssignment({role,teamMember:{firstName:"A",lastName:"B"}})).toBe(true));it.each(["Sales","Planner","Partner 1 Prep","Client"])("%s is not production",role=>expect(isProductionAssignment({role,teamMember:{firstName:"A",lastName:"B"}})).toBe(false))});
@@ -52,6 +53,48 @@ describe("inbound contractor identity gate", () => {
       active: true,
       paused: true,
     })).toBe(false);
+  });
+});
+describe("grounded schedule answers", () => {
+  it("renders only assignment fields returned by the database", () => {
+    const reply = renderGroundedScheduleReply([{
+      id: "assignment-1",
+      role: "VIDEOGRAPHER",
+      confirmationStatus: "PENDING",
+      event: {
+        name: "Wedding Ceremony",
+        startsAt: new Date("2026-08-14T21:30:00.000Z"),
+        endsAt: null,
+        timezone: "America/Denver",
+        venueName: "The Pines",
+        address: "633 Park Avenue",
+      },
+    }]);
+    expect(reply).toBe("Wedding Ceremony — Aug 14, 2026 at 3:30 PM MDT; videographer; pending; The Pines, 633 Park Avenue.");
+  });
+
+  it("states when a location is absent instead of inventing one", () => {
+    const reply = renderGroundedScheduleReply([{
+      id: "assignment-1",
+      role: "PHOTOGRAPHER",
+      confirmationStatus: "CONFIRMED",
+      event: {
+        name: "Wedding Ceremony",
+        startsAt: new Date("2026-09-01T16:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Denver",
+        venueName: null,
+        address: null,
+      },
+    }]);
+    expect(reply).toContain("location not recorded");
+  });
+
+  it("fails closed for invalid, reversed, or past date ranges", () => {
+    const now = new Date("2026-07-30T18:00:00.000Z");
+    expect(safeScheduleRange({ start: "not-a-date", end: "2026-08-01" }, now)).toBeNull();
+    expect(safeScheduleRange({ start: "2026-08-02", end: "2026-08-01" }, now)).toBeNull();
+    expect(safeScheduleRange({ start: "2026-07-01", end: "2026-07-02" }, now)).toBeNull();
   });
 });
 describe("timeline files",()=>{it("allows timeline and day-sheet documents with URLs",()=>{expect(isTimelineFile({filename:"wedding-timeline.pdf",mimeType:"application/pdf",url:"https://files.example/timeline"})).toBe(true);expect(isTimelineFile({name:"Job Day Sheet",mimeType:"image/png",url:"https://files.example/day-sheet"})).toBe(true)});it("does not expose arbitrary miscellaneous or executable files",()=>{expect(isTimelineFile({description:"Miscellaneous Files",filename:"contract.pdf",mimeType:"application/pdf",url:"https://files.example/contract"})).toBe(false);expect(isTimelineFile({filename:"timeline.exe",mimeType:"application/octet-stream",url:"https://files.example/timeline"})).toBe(false)})});
