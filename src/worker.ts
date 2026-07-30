@@ -9,13 +9,16 @@ import { parsePhoneNumber } from "libphonenumber-js";
 import { notifyProjectManagers } from "@/services/project-manager";
 import { notifySystemDeveloper } from "@/services/developer-alerts";
 import { env } from "@/lib/env";
+import { isActiveInboundContractor } from "@/lib/inbound-identity";
 
 const worker = new Worker("planned-actions", async job => sendPlannedAction(job.data.actionId as string), { connection, concurrency: 10 });
 
 async function resolveInboundSmsPerson(senderRaw: string) {
   const phone = parsePhoneNumber(String(senderRaw), "US").number;
   const direct = await db.person.findUnique({ where: { phone } });
-  if (direct) return { person: direct, phone, testAlias: false };
+  if (direct && isActiveInboundContractor(direct)) {
+    return { person: direct, phone, testAlias: false };
+  }
 
   const config = env();
   if (!config.TEST_MODE || !config.TEST_SMS_RECIPIENT) return { person: null, phone, testAlias: false };
@@ -95,7 +98,7 @@ const webhookWorker = new Worker("webhooks", async job => {
       if (!person) {
         await db.webhookEvent.update({
           where: { id: event.id },
-          data: { status: "COMPLETED", processedAt: new Date(), error: "Ignored: no contractor matches inbound phone number" },
+          data: { status: "COMPLETED", processedAt: new Date(), error: "Ignored: sender is not an active contractor profile" },
         });
         return;
       }
