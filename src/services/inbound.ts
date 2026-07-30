@@ -3,11 +3,88 @@ import { db } from "@/lib/db";
 import { log } from "@/lib/log";
 import { reconcileEventReadiness } from "@/services/readiness";
 import { VscoWorkspaceProvider } from "@/providers/vsco";
+import { launchIncludedEventWhere } from "@/lib/launch-cutoff";
+import { formatInTimeZone } from "date-fns-tz";
 
 const confirmWords = /^(confirm|confirmed|yes|yep|i(?:'|’)ll be there)[.! ]*$/i;
 const declineWords = /^(decline|cannot work|can't work|no)[.! ]*$/i;
 const financialWords = /\b(pay|paid|payment|rate|rates|compensation|invoice|billing|price|pricing|cost|fee|fees|money|financial|contract amount|1099|tax)\b/i;
 const standardPayWords = /\b(pay|paid|rate|rates|compensation|additional hours?|extra hours?|mileage|miles?|travel reimbursement)\b/i;
+const monthNumbers: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
+type RequestedEventDate = {
+  month: number;
+  day: number;
+  year?: number;
+};
+
+type AssignmentWithEventDate = {
+  event: {
+    startsAt: Date;
+    timezone: string;
+  };
+};
+
+export function requestedEventDate(text: string): RequestedEventDate | null {
+  const named = text.match(
+    /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b/i,
+  );
+  if (named) {
+    const month = monthNumbers[named[1]!.toLowerCase()];
+    const day = Number(named[2]);
+    const year = named[3] ? Number(named[3]) : undefined;
+    if (month && day >= 1 && day <= 31) return { month, day, year };
+  }
+  const numeric = text.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/);
+  if (!numeric) return null;
+  const month = Number(numeric[1]);
+  const day = Number(numeric[2]);
+  const rawYear = numeric[3] ? Number(numeric[3]) : undefined;
+  const year = rawYear && rawYear < 100 ? 2000 + rawYear : rawYear;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { month, day, year };
+}
+
+export function selectRequestedAssignment<T extends AssignmentWithEventDate>(
+  assignments: T[],
+  text: string,
+) {
+  const requested = requestedEventDate(text);
+  if (!requested) return assignments[0] ?? null;
+  return assignments.find(assignment => {
+    const month = Number(formatInTimeZone(assignment.event.startsAt, assignment.event.timezone, "M"));
+    const day = Number(formatInTimeZone(assignment.event.startsAt, assignment.event.timezone, "d"));
+    const year = Number(formatInTimeZone(assignment.event.startsAt, assignment.event.timezone, "yyyy"));
+    return month === requested.month &&
+      day === requested.day &&
+      (requested.year === undefined || year === requested.year);
+  }) ?? null;
+}
 
 export const helpMenu = "Authentic Moments contractor help:\nCONFIRM — confirm your next assignment\nSCHEDULE — upcoming ceremony dates\nDETAILS — role, date, venue, times, and timeline link\nTIMELINE — latest timeline or day sheet\nLOCATION — venue and address\nHOURS — available start/end times\nPAY — standard rates and mileage policy\nHELP — show this menu\nYou can also ask a question in your own words. Reply STOP to opt out.";
 export const isFinancialQuestion = (text: string) => financialWords.test(text);
@@ -45,10 +122,18 @@ export async function handleDeterministic(personId: string, text: string, channe
   if (intent === "FINANCIAL") return "For privacy and security, this number can only share Authentic Moments' published standard contractor rates and mileage policy. It cannot access individual payouts, invoices, client pricing, billing, taxes, or contract amounts. Reply PAY for the standard rate card.";
   if (["SCHEDULE", "DETAILS", "TIMELINE", "LOCATION", "HOURS"].includes(intent)) {
     const assignments = await db.assignment.findMany({
-      where: { personId, active: true, event: { startsAt: { gt: new Date() }, canceled: false } },
+      where: {
+        personId,
+        active: true,
+        event: {
+          startsAt: { gt: new Date() },
+          canceled: false,
+          ...launchIncludedEventWhere,
+        },
+      },
       include: { event: true },
       orderBy: { event: { startsAt: "asc" } },
-      take: intent === "SCHEDULE" ? 5 : 1,
+      take: intent === "SCHEDULE" ? 5 : 10,
     });
     if (!assignments.length) return "I could not find an upcoming active ceremony assignment for you.";
     if (intent === "SCHEDULE") {
@@ -56,7 +141,14 @@ export async function handleDeterministic(personId: string, text: string, channe
         `${assignment.event.name}: ${formatDateTime(assignment.event.startsAt, assignment.event.timezone)} (${assignment.role.toLowerCase()})`
       ).join("\n");
     }
-    const assignment = assignments[0]!;
+    const assignment = selectRequestedAssignment(assignments, text);
+    if (!assignment) {
+      const requested = requestedEventDate(text);
+      const label = requested
+        ? `${new Date(2000, requested.month - 1, requested.day).toLocaleDateString("en-US", { month: "long", day: "numeric" })}${requested.year ? `, ${requested.year}` : ""}`
+        : "that date";
+      return `I could not find an upcoming active ceremony assignment for ${label}.`;
+    }
     if (intent === "TIMELINE") {
       const timeline = await timelineReply(assignment.event.vscoJobId, assignment.event.name);
       if (timeline.unavailable) return "Timeline lookup is temporarily unavailable. Please try again later.";
@@ -79,7 +171,7 @@ export async function handleDeterministic(personId: string, text: string, channe
     return `${assignment.event.name}: start ${start}; end ${end}.`;
   }
   if (!["CONFIRM", "DECLINE"].includes(intent)) return null;
-  const pending = await db.assignment.findMany({ where: { personId, active: true, confirmationStatus: { in: [ConfirmationStatus.PENDING, ConfirmationStatus.NEEDS_ATTENTION] }, event: { startsAt: { gt: new Date() }, canceled: false } }, include: { event: true }, orderBy: { event: { startsAt: "asc" } } });
+  const pending = await db.assignment.findMany({ where: { personId, active: true, confirmationStatus: { in: [ConfirmationStatus.PENDING, ConfirmationStatus.NEEDS_ATTENTION] }, event: { startsAt: { gt: new Date() }, canceled: false, ...launchIncludedEventWhere } }, include: { event: true }, orderBy: { event: { startsAt: "asc" } } });
   if (pending.length !== 1) return pending.length ? "Which assignment do you mean? Please reply with the wedding date." : "I could not find an active assignment awaiting your response. An administrator will review this.";
   const assignment = pending[0]!;
   const now = new Date();

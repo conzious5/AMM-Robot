@@ -2,9 +2,10 @@ import OpenAI from "openai";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { isFinancialQuestion, isStandardPayQuestion, standardPayReply } from "@/services/inbound";
+import { launchIncludedEventWhere } from "@/lib/launch-cutoff";
 
 export async function getPersonSchedule(personId: string, start: Date, end: Date) {
-  return db.assignment.findMany({ where: { personId, active: true, event: { startsAt: { gte: start, lte: end }, canceled: false } }, select: { id: true, role: true, confirmationStatus: true, event: { select: { name: true, startsAt: true, endsAt: true, timezone: true, venueName: true, address: true } } }, orderBy: { event: { startsAt: "asc" } } });
+  return db.assignment.findMany({ where: { personId, active: true, event: { startsAt: { gte: start, lte: end }, canceled: false, ...launchIncludedEventWhere } }, select: { id: true, role: true, confirmationStatus: true, event: { select: { name: true, startsAt: true, endsAt: true, timezone: true, venueName: true, address: true } } }, orderBy: { event: { startsAt: "asc" } } });
 }
 export async function answerScheduleQuestion(personId: string, text: string) {
   const config = env();
