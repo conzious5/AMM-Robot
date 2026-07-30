@@ -40,7 +40,10 @@ export async function sendPlannedAction(actionId: string) {
     }
     if (assignment && ["REMINDER", "ESCALATE"].includes(action.type)) {
       const slotKey = reminderDailySlotKey(person.id, now, person.timezone);
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${slotKey}))`;
+      await tx.$queryRaw`
+        SELECT 1::int AS "locked"
+        FROM pg_advisory_xact_lock(hashtext(${slotKey}))
+      `;
       const [slot, bounds] = await Promise.all([
         tx.setting.findUnique({ where: { key: slotKey } }),
         Promise.resolve(localDayBounds(now, person.timezone)),
