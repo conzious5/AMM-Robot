@@ -3,7 +3,7 @@ import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { OperationStatusSummary } from "@/components/OperationStatusSummary";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdministrator } from "@/lib/auth";
 import { assertPermission } from "@/lib/permissions";
 import { dismissOperationError, getOperationOverview, plainStatus, type OperationTone } from "@/services/operation-status";
 import { resolveOperationalAlert } from "@/services/operations";
@@ -29,7 +29,7 @@ function actionName(type: string) {
 
 async function dismissError(data: FormData) {
   "use server";
-  const admin = await requireAdmin();
+  const admin = await requireAdministrator();
   assertPermission(admin, "alerts:resolve");
   const key = String(data.get("errorKey") || "");
   if (key.startsWith("alert:")) {
@@ -43,6 +43,7 @@ async function dismissError(data: FormData) {
 }
 
 export default async function Page() {
+  await requireAdministrator();
   const [sync, audit, webhooks, agents, actions, overview] = await Promise.all([
     db.syncRun.findMany({ orderBy: { startedAt: "desc" }, take: 25 }),
     db.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 50 }),

@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "@/lib/db";
+import { isAuthorizedHumanAccount } from "@/lib/authorized-users";
 
 export type AdministratorInviteValue = {
   administratorId: string;
@@ -26,7 +27,7 @@ export function administratorInviteIsUsable(value: unknown, now = new Date()): v
 
 export async function createAdministratorInvite(administratorId: string, now = new Date(), ttlHours = 48) {
   const administrator = await db.administrator.findUniqueOrThrow({ where: { id: administratorId } });
-  if (!administrator.active) throw new Error("An inactive administrator cannot be invited.");
+  if (!isAuthorizedHumanAccount(administrator)) throw new Error("That account is not an authorized AMM Robot user.");
   const token = randomBytes(32).toString("base64url");
   const value: AdministratorInviteValue = {
     administratorId,
@@ -51,21 +52,21 @@ export async function getAdministratorInvite(token: string, now = new Date()) {
   const setting = await db.setting.findUnique({ where: { key: administratorInviteKey(token) } });
   if (!administratorInviteIsUsable(setting?.value, now)) return null;
   const administrator = await db.administrator.findUnique({ where: { id: setting.value.administratorId } });
-  if (!administrator?.active) return null;
+  if (!isAuthorizedHumanAccount(administrator)) return null;
   return { administrator, expiresAt: new Date(setting.value.expiresAt) };
 }
 
 export async function completeAdministratorInvite(token: string, password: string, now = new Date()) {
-  if (password.length < 12) throw new Error("Use a password with at least 12 characters.");
+  if (password.length < 12 || password.length > 256) throw new Error("Use a password between 12 and 256 characters.");
   const key = administratorInviteKey(token);
   return db.$transaction(async tx => {
     const setting = await tx.setting.findUnique({ where: { key } });
     if (!administratorInviteIsUsable(setting?.value, now)) throw new Error("This setup link is invalid or has expired.");
     const administrator = await tx.administrator.findUniqueOrThrow({ where: { id: setting.value.administratorId } });
-    if (!administrator.active) throw new Error("This account is inactive.");
+    if (!isAuthorizedHumanAccount(administrator)) throw new Error("This account is not authorized.");
     await tx.administrator.update({
       where: { id: administrator.id },
-      data: { passwordHash: await bcrypt.hash(password, 12) },
+      data: { passwordHash: await bcrypt.hash(password, 12), sessionVersion: { increment: 1 } },
     });
     await tx.setting.delete({ where: { key } });
     await tx.auditLog.create({

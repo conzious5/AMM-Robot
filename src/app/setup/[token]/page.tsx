@@ -38,9 +38,9 @@ export default async function Page({
       {error && <p className="danger">{error}</p>}
       <form action={setPassword}>
         <label>New password</label>
-        <input name="password" type="password" minLength={12} autoComplete="new-password" required />
+        <input name="password" type="password" minLength={12} maxLength={256} autoComplete="new-password" required />
         <label>Confirm password</label>
-        <input name="confirmation" type="password" minLength={12} autoComplete="new-password" required />
+        <input name="confirmation" type="password" minLength={12} maxLength={256} autoComplete="new-password" required />
         <p><button>Activate my account</button></p>
       </form>
       <p className="muted">Use at least 12 characters. This one-time link expires {invite.expiresAt.toLocaleString()}.</p>

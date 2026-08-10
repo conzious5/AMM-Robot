@@ -145,6 +145,7 @@ model Administrator {
   email        String    @unique
   phone        String?
   passwordHash String
+  sessionVersion Int       @default(0)
   role         AdminRole @default(ADMIN)
   active       Boolean   @default(true)
   dailyBriefEnabled Boolean @default(false)
@@ -155,6 +156,17 @@ model Administrator {
   dailyBriefs ProjectManagerDailyBrief[]
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+}
+
+model AuthenticationAttempt {
+  id           String   @id @default(cuid())
+  identityHash String
+  kind         String
+  successful   Boolean  @default(false)
+  attemptedAt  DateTime @default(now())
+
+  @@index([kind, identityHash, attemptedAt])
+  @@index([attemptedAt])
 }
 
 model Person {

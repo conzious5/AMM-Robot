@@ -4,7 +4,7 @@ import type { ReadinessInput } from "@/services/readiness";
 import { evaluateReadiness } from "@/services/readiness";
 import { deriveTaskStatus } from "@/services/tasks";
 import { groupEventsForBrief, projectManagerNotificationKey } from "@/services/project-manager";
-import { hasPermission } from "@/lib/permissions";
+import { assertCanEditProjectManagerProfile, canAccessAdministrativeArea, canEditProjectManagerProfile, hasPermission } from "@/lib/permissions";
 import { classifyProjectManagerQuestion, projectManagerToolNames } from "@/lib/project-manager-agent";
 import { isVscoTaskWebhookAuthorized } from "@/lib/vsco-task-webhook";
 import { assignmentIsInsideLaunchExclusion, contractorLaunchEligibility } from "@/services/go-live";
@@ -14,6 +14,10 @@ import { resolveCommunicationServiceStatus } from "@/services/service-control";
 import { localDateKey, nextUnoccupiedLocalDay } from "@/lib/quiet-hours";
 import { communicationChannelLabel } from "@/lib/channels";
 import { isLaunchCutoffExcluded } from "@/lib/launch-cutoff";
+import { authenticationAttemptCountsAreLimited, sessionPayloadMatchesAdministrator } from "@/lib/auth";
+import { confirmationTokenIsUsable } from "@/lib/confirmation";
+import { ADMINISTRATOR_EMAIL, isAuthorizedHumanAccount, PORTAL_USER_EMAIL } from "@/lib/authorized-users";
+import { contractorContactAuditValues } from "@/services/operations";
 
 const base = (overrides: Partial<ReadinessInput> = {}): ReadinessInput => ({
   canceled: false,
@@ -66,6 +70,88 @@ describe("project-manager acceptance", () => {
   it("prevents project managers from changing security or production controls", () => {
     expect(hasPermission("PROJECT_MANAGER", "settings:security")).toBe(false);
     expect(hasPermission("PROJECT_MANAGER", "production:enable")).toBe(false);
+  });
+
+  it("denies unauthenticated project-manager profile updates", () => {
+    const target = { id: "pm-1", email: PORTAL_USER_EMAIL, role: "PROJECT_MANAGER" } as const;
+    expect(canEditProjectManagerProfile(null, target)).toBe(false);
+    expect(() => assertCanEditProjectManagerProfile(null, target)).toThrow(/permission/i);
+  });
+
+  it("allows a project manager to update only their own permitted profile", () => {
+    const actor = { id: "pm-1", role: "PROJECT_MANAGER" } as const;
+    expect(canEditProjectManagerProfile(actor, { id: "pm-1", email: PORTAL_USER_EMAIL, role: "PROJECT_MANAGER" })).toBe(true);
+    expect(canEditProjectManagerProfile(actor, { id: "pm-2", email: "other@authentic-moments.com", role: "PROJECT_MANAGER" })).toBe(false);
+  });
+
+  it("prevents a project manager from targeting owner or administrator records", () => {
+    const actor = { id: "pm-1", role: "PROJECT_MANAGER" } as const;
+    expect(canEditProjectManagerProfile(actor, { id: "owner", email: "admin@example.com", role: "OWNER" })).toBe(false);
+    expect(canEditProjectManagerProfile(actor, { id: "admin", email: ADMINISTRATOR_EMAIL, role: "ADMIN" })).toBe(false);
+  });
+
+  it("gives only the administrator intended access to Cylina's profile", () => {
+    const target = { id: "pm-1", email: PORTAL_USER_EMAIL, role: "PROJECT_MANAGER" } as const;
+    expect(canEditProjectManagerProfile({ id: "admin", role: "ADMIN" }, target)).toBe(true);
+    expect(canEditProjectManagerProfile({ id: "owner", role: "OWNER" }, target)).toBe(false);
+  });
+
+  it("restricts logs and administrative areas to ADMIN", () => {
+    expect(canAccessAdministrativeArea("ADMIN")).toBe(true);
+    expect(canAccessAdministrativeArea("PROJECT_MANAGER")).toBe(false);
+    expect(canAccessAdministrativeArea("OWNER")).toBe(false);
+  });
+
+  it("allows exactly the intended two human identities and roles", () => {
+    expect(isAuthorizedHumanAccount({ email: ADMINISTRATOR_EMAIL, role: "ADMIN", active: true })).toBe(true);
+    expect(isAuthorizedHumanAccount({ email: PORTAL_USER_EMAIL, role: "PROJECT_MANAGER", active: true })).toBe(true);
+    expect(isAuthorizedHumanAccount({ email: ADMINISTRATOR_EMAIL, role: "OWNER", active: true })).toBe(false);
+    expect(isAuthorizedHumanAccount({ email: "admin@example.com", role: "OWNER", active: true })).toBe(false);
+    expect(isAuthorizedHumanAccount({ email: "other@authentic-moments.com", role: "ADMIN", active: true })).toBe(false);
+    expect(isAuthorizedHumanAccount({ email: PORTAL_USER_EMAIL, role: "PROJECT_MANAGER", active: false })).toBe(false);
+  });
+
+  it("records contractor contact changes with previous and new values", () => {
+    expect(contractorContactAuditValues(
+      { email: "old@example.com", phone: "+13035550100" },
+      { email: "new@example.com", phone: "+13035550101" },
+    )).toEqual({
+      before: { email: "old@example.com", phone: "+13035550100" },
+      after: { email: "new@example.com", phone: "+13035550101" },
+    });
+  });
+
+  it("gives ADMIN full system control and gives legacy OWNER no permissions", () => {
+    expect(hasPermission("ADMIN", "production:enable")).toBe(true);
+    expect(hasPermission("ADMIN", "settings:security")).toBe(true);
+    expect(hasPermission("OWNER", "production:enable")).toBe(false);
+    expect(hasPermission("OWNER", "settings:security")).toBe(false);
+  });
+
+  it("enforces login throttling at the documented email and IP thresholds", () => {
+    expect(authenticationAttemptCountsAreLimited(9, 49)).toBe(false);
+    expect(authenticationAttemptCountsAreLimited(10, 0)).toBe(true);
+    expect(authenticationAttemptCountsAreLimited(0, 50)).toBe(true);
+  });
+
+  it("accepts only a current active administrator session version", () => {
+    const admin = { id: "admin-1", email: ADMINISTRATOR_EMAIL, role: "ADMIN", active: true, sessionVersion: 0 };
+    expect(sessionPayloadMatchesAdministrator({ sub: "admin-1", ver: 0 }, admin)).toBe(true);
+    expect(sessionPayloadMatchesAdministrator({ sub: "admin-1" }, admin)).toBe(false);
+    expect(sessionPayloadMatchesAdministrator({ sub: "other", ver: 0 }, admin)).toBe(false);
+    expect(sessionPayloadMatchesAdministrator({ sub: "admin-1", ver: 1 }, admin)).toBe(false);
+    expect(sessionPayloadMatchesAdministrator({ sub: "admin-1", ver: 0 }, { ...admin, active: false })).toBe(false);
+    expect(sessionPayloadMatchesAdministrator({ sub: "admin-1", ver: 0 }, { ...admin, email: "other@authentic-moments.com" })).toBe(false);
+  });
+
+  it("rejects expired, used, and revoked confirmation bearer tokens", () => {
+    const now = new Date("2026-08-10T12:00:00.000Z");
+    const active = { usedAt: null, revokedAt: null, expiresAt: new Date("2026-08-11T12:00:00.000Z") };
+    expect(confirmationTokenIsUsable(active, now)).toBe(true);
+    expect(confirmationTokenIsUsable({ ...active, expiresAt: now }, now)).toBe(false);
+    expect(confirmationTokenIsUsable({ ...active, usedAt: now }, now)).toBe(false);
+    expect(confirmationTokenIsUsable({ ...active, revokedAt: now }, now)).toBe(false);
+    expect(confirmationTokenIsUsable(null, now)).toBe(false);
   });
 
   it("uses only the explicit owner service switch after it is created", () => {

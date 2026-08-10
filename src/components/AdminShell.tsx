@@ -9,11 +9,13 @@ export function AdminShell({
   admin,
   serviceStatus,
   toggleService,
+  logout,
 }: {
   children: React.ReactNode;
   admin: Administrator;
   serviceStatus: CommunicationServiceStatus;
   toggleService: (data: FormData) => Promise<void>;
+  logout: () => Promise<void>;
 }) {
   const links = admin.role === "PROJECT_MANAGER" ? projectManagerLinks : administratorLinks;
   const active = serviceStatus === "ACTIVE";
@@ -23,10 +25,11 @@ export function AdminShell({
       <h1>Authentic Moments</h1>
       <div className="nav-user">{admin.name}<small>{admin.role.replaceAll("_", " ").toLowerCase()}</small></div>
       {links.map(([href,label])=><Link key={href} href={href}>{label}</Link>)}
+      <form action={logout}><button className="secondary">Sign out</button></form>
     </nav>
     <aside className={`service-switch ${active ? "service-active" : "service-suspended"}`} aria-label="Communication service status">
       <span className="service-state"><span className="service-dot" aria-hidden="true" /> Service {active ? "active" : "suspended"}</span>
-      {admin.role === "OWNER" && (
+      {admin.role === "ADMIN" && (
         <form action={toggleService}>
           <input type="hidden" name="status" value={active ? "SUSPENDED" : "ACTIVE"} />
           <button className={active ? "suspend-button" : undefined}>{active ? "Suspend" : "Activate"}</button>

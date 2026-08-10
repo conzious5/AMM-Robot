@@ -55,6 +55,16 @@ async function removeQueuedActionJob(jobQueueId: string | null, fallbackIdempote
   }
 }
 
+export function contractorContactAuditValues(
+  before: { email: string | null; phone: string | null },
+  after: { email: string | null; phone: string | null },
+) {
+  return {
+    before: { email: before.email, phone: before.phone },
+    after: { email: after.email, phone: after.phone },
+  };
+}
+
 export async function getEventReadiness(eventId: string) {
   return db.event.findUnique({
     where: { id: eventId },
@@ -282,7 +292,8 @@ export async function updatePersonContact(adminId: string, personId: string, inp
   if (phoneInput && (!parsedPhone || !parsedPhone.isValid())) throw new Error("Enter a valid phone number.");
   const phone = parsedPhone?.number ?? null;
   const person = await db.person.update({ where: { id: personId }, data: { email, normalizedEmail: email, phone, emailEligible: Boolean(email), smsEligible: Boolean(phone) } });
-  await audit(adminId, "PERSON_CONTACT_UPDATED", "Person", personId, { email: before.email, phone: before.phone }, { email, phone }, idempotencyKey);
+  const change = contractorContactAuditValues(before, { email, phone });
+  await audit(adminId, "PERSON_CONTACT_UPDATED", "Person", personId, change.before, change.after, idempotencyKey);
   return person;
 }
 

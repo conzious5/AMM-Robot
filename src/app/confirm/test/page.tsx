@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
+import { requireAdmin } from "@/lib/auth";
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ role?: string }> }) {
+  await requireAdmin();
   const { role } = await searchParams;
   const destination = role === "video"
     ? "https://authentic-moments.com/video-thank-you-for-confirming/"

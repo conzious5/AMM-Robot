@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { ADMINISTRATOR_EMAIL, PORTAL_USER_EMAIL } from "../src/lib/authorized-users";
 const db = new PrismaClient();
 const fourWeekEmail = "Hi {{firstName}},\n\nThis is your 4-week reminder for {{eventName}}.\n\nDate: {{eventDate}}\nLocation: {{eventLocation}}\nRole: {{role}}\n\nPlease confirm your assignment using the secure button below:\n{{confirmationUrl}}";
 const twoWeekEmail = "Hi {{firstName}},\n\nReminder: we still need your confirmation for {{eventName}}.\n\nDate: {{eventDate}}\nLocation: {{eventLocation}}\nRole: {{role}}\n\nPlease confirm now using the secure button below:\n{{confirmationUrl}}";
@@ -7,32 +8,41 @@ const oneWeekSms = "Authentic Moments: Your event is one week away. {{eventName}
 const threeDayEmail = "Hi {{firstName}},\n\nURGENT: {{eventName}} is only 3 days away and we still need your confirmation.\n\nDate: {{eventDate}}\nLocation: {{eventLocation}}\nRole: {{role}}\n\nPlease confirm immediately:\n{{confirmationUrl}}";
 const oneDaySms = "FINAL REMINDER from Authentic Moments: {{eventName}} is tomorrow, {{eventDate}}, at {{eventLocation}}. Please confirm now: {{confirmationUrl}}";
 async function main() {
+  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   const configuredPassword = process.env.ADMIN_PASSWORD_B64
     ? Buffer.from(process.env.ADMIN_PASSWORD_B64, "base64").toString("utf8")
     : process.env.ADMIN_PASSWORD;
-  const hash = configuredPassword
-    ? await bcrypt.hash(configuredPassword, 12)
-    : process.env.ADMIN_PASSWORD_HASH || await bcrypt.hash("change-me-before-production", 12);
-  if (configuredPassword || process.env.ADMIN_PASSWORD_HASH) {
-    await db.administrator.updateMany({
-      where: { role: "OWNER" },
-      data: { passwordHash: hash, active: true },
-    });
+  const configuredHash = process.env.ADMIN_PASSWORD_HASH;
+  const legacyPassword = "change-me-before-production";
+  const usesLegacyPassword = configuredPassword === legacyPassword
+    || Boolean(configuredHash && await bcrypt.compare(legacyPassword, configuredHash).catch(() => false));
+  if ((adminEmail && adminEmail !== ADMINISTRATOR_EMAIL) || usesLegacyPassword) {
+    throw new Error("Refusing to seed an unauthorized administrator identity or obsolete default password");
   }
-  await db.administrator.upsert({
-    where: { email: (process.env.ADMIN_EMAIL || "admin@example.com").toLowerCase() },
-    update: { passwordHash: hash, active: true },
-    create: {
-      name: "Authentic Moments Administrator",
-      email: (process.env.ADMIN_EMAIL || "admin@example.com").toLowerCase(),
-      passwordHash: hash,
-      role: "OWNER",
-    },
-  });
+  const hasPartialOwnerConfiguration = Boolean(adminEmail || configuredPassword || configuredHash);
+  if (hasPartialOwnerConfiguration && !(adminEmail && (configuredPassword || configuredHash))) {
+    throw new Error("ADMIN_EMAIL and either ADMIN_PASSWORD, ADMIN_PASSWORD_B64, or ADMIN_PASSWORD_HASH are required together");
+  }
+  if (adminEmail && (configuredPassword || configuredHash)) {
+    const hash = configuredPassword ? await bcrypt.hash(configuredPassword, 12) : configuredHash!;
+    await db.administrator.upsert({
+      where: { email: adminEmail },
+      update: { passwordHash: hash, active: true, role: "ADMIN", sessionVersion: { increment: 1 } },
+      create: {
+        name: "Authentic Moments Administrator",
+        email: adminEmail,
+        passwordHash: hash,
+        role: "ADMIN",
+      },
+    });
+  } else console.warn("Administrator seed skipped: secure administrator credentials were not configured.");
   const projectManagerEmail = process.env.PROJECT_MANAGER_EMAIL?.trim().toLowerCase();
   const projectManagerPassword = process.env.PROJECT_MANAGER_PASSWORD_B64
     ? Buffer.from(process.env.PROJECT_MANAGER_PASSWORD_B64, "base64").toString("utf8")
     : process.env.PROJECT_MANAGER_PASSWORD;
+  if (projectManagerEmail && projectManagerEmail !== PORTAL_USER_EMAIL) {
+    throw new Error(`PROJECT_MANAGER_EMAIL must be ${PORTAL_USER_EMAIL}`);
+  }
   if (projectManagerEmail && projectManagerPassword) {
     const projectManagerHash = await bcrypt.hash(projectManagerPassword, 12);
     await db.administrator.upsert({
@@ -41,6 +51,7 @@ async function main() {
         name: process.env.PROJECT_MANAGER_NAME || "Project Manager",
         phone: process.env.PROJECT_MANAGER_PHONE || null,
         passwordHash: projectManagerHash,
+        sessionVersion: { increment: 1 },
         role: "PROJECT_MANAGER",
         active: true,
         dailyBriefEnabled: process.env.PROJECT_MANAGER_DAILY_BRIEF_ENABLED !== "false",

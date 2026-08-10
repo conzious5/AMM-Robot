@@ -7,12 +7,23 @@ import { sendReminderPreview } from "@/services/messaging";
 import { reconcileVscoSyncFailureAlert, runVscoSync } from "@/services/sync";
 import bcrypt from "bcryptjs";
 import { requireAdmin } from "@/lib/auth";
-import { assertPermission } from "@/lib/permissions";
+import { PORTAL_USER_EMAIL } from "@/lib/authorized-users";
+import { assertCanEditProjectManagerProfile, assertPermission } from "@/lib/permissions";
 import { inspectVscoTaskCapabilities, refreshCalculatedTaskStatuses } from "@/services/tasks";
 import { reconcileAllEventReadiness } from "@/services/readiness";
 import { getProductionLaunchState, prepareProductionLaunch } from "@/services/go-live";
 import { getCommunicationServiceState } from "@/services/service-control";
 import { communicationChannelLabel } from "@/lib/channels";
+import { z } from "zod";
+
+const ProjectManagerInput = z.object({
+  name: z.string().trim().min(1).max(120),
+  email: z.string().trim().toLowerCase().email().max(254),
+  phone: z.string().trim().max(40).transform(value => value || null),
+  dailyBriefEnabled: z.boolean(),
+  dailyBriefTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  notificationChannel: z.enum(["EMAIL", "SMS", "BOTH"]),
+});
 
 async function update(data: FormData) {
   "use server";
@@ -28,27 +39,28 @@ async function saveProjectManager(data: FormData) {
   const admin = await requireAdmin();
   assertPermission(admin, "settings:notifications");
   const id = String(data.get("id") || "");
-  if (admin.role === "PROJECT_MANAGER" && id !== admin.id) throw new Error("Project managers may edit only their own notification profile.");
-  const email = String(data.get("email")).trim().toLowerCase();
   const password = String(data.get("password") || "");
-  if (password && password.length < 12) throw new Error("Passwords must be at least 12 characters.");
-  const values = {
+  if (password && (password.length < 12 || password.length > 256)) throw new Error("Passwords must contain between 12 and 256 characters.");
+  const values = ProjectManagerInput.parse({
     name: String(data.get("name")).trim(),
-    email,
-    phone: String(data.get("phone") || "").trim() || null,
+    email: String(data.get("email")),
+    phone: String(data.get("phone") || ""),
     dailyBriefEnabled: data.get("dailyBriefEnabled") === "on",
     dailyBriefTime: String(data.get("dailyBriefTime") || "08:00"),
-    notificationChannel: (["EMAIL", "SMS", "BOTH"].includes(String(data.get("notificationChannel"))) ? String(data.get("notificationChannel")) : "EMAIL") as "EMAIL" | "SMS" | "BOTH",
-  };
+    notificationChannel: String(data.get("notificationChannel")),
+  });
+  if (values.email !== PORTAL_USER_EMAIL) throw new Error("Only Cylina's operational portal account may be configured.");
   if (id) {
+    const target = await db.administrator.findUniqueOrThrow({ where: { id } });
+    assertCanEditProjectManagerProfile(admin, target);
     await db.administrator.update({
       where: { id },
-      data: { ...values, ...(password ? { passwordHash: await bcrypt.hash(password, 12) } : {}) },
+      data: { ...values, ...(password ? { passwordHash: await bcrypt.hash(password, 12), sessionVersion: { increment: 1 } } : {}) },
     });
     await db.auditLog.create({ data: { actorType: "ADMIN", actorId: admin.id, action: "PROJECT_MANAGER_PROFILE_UPDATED", entityType: "Administrator", entityId: id, after: { ...values, passwordChanged: Boolean(password) } } });
   } else {
-    if (admin.role === "PROJECT_MANAGER") throw new Error("Only an administrator can invite another project manager.");
-    if (password.length < 12) throw new Error("A new project manager requires a password of at least 12 characters.");
+    if (admin.role !== "ADMIN") throw new Error("Only the administrator can create the operational portal account.");
+    if (password.length < 12 || password.length > 256) throw new Error("A new project manager requires a password between 12 and 256 characters.");
     const manager = await db.administrator.create({ data: { ...values, passwordHash: await bcrypt.hash(password, 12), role: "PROJECT_MANAGER" } });
     await db.auditLog.create({ data: { actorType: "ADMIN", actorId: admin.id, action: "PROJECT_MANAGER_INVITED", entityType: "Administrator", entityId: manager.id, after: { name: manager.name, email: manager.email } } });
   }
@@ -60,8 +72,9 @@ async function saveRequiredRole(data: FormData) {
   const admin = await requireAdmin();
   assertPermission(admin, "assignments:edit");
   const jobType = String(data.get("jobType")).trim();
-  const role = String(data.get("role")) as "PHOTOGRAPHER" | "VIDEOGRAPHER" | "ASSISTANT";
-  const requiredCount = Math.max(0, Number(data.get("requiredCount")));
+  if (!jobType || jobType.length > 120) throw new Error("Enter a valid job type.");
+  const role = z.enum(["PHOTOGRAPHER", "VIDEOGRAPHER", "ASSISTANT"]).parse(String(data.get("role")));
+  const requiredCount = z.coerce.number().int().min(0).max(20).parse(data.get("requiredCount"));
   await db.requiredRoleRule.upsert({
     where: { jobType_role: { jobType, role } },
     update: { requiredCount, active: data.get("active") === "on" },
@@ -150,7 +163,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
   const [policies, syncRun, managers, roleRules, capabilities, launchState, serviceState] = await Promise.all([
     db.reminderPolicy.findMany({ orderBy: { attemptNumber: "asc" } }),
     db.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
-    db.administrator.findMany({ where: { role: "PROJECT_MANAGER" }, orderBy: { name: "asc" } }),
+    db.administrator.findMany({ where: { role: "PROJECT_MANAGER", email: PORTAL_USER_EMAIL }, orderBy: { name: "asc" } }),
     db.requiredRoleRule.findMany({ orderBy: [{ jobType: "asc" }, { role: "asc" }] }),
     db.providerCapability.findMany({ where: { provider: "VSCO" }, orderBy: { capability: "asc" } }),
     getProductionLaunchState(),
@@ -203,7 +216,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
           <p>Introduction start: {new Date(launchState.introStart).toLocaleString()}</p>
           <p>Reminder start: {new Date(launchState.reminderStart).toLocaleString()}</p>
         </>}
-        {!launchState && admin.role === "OWNER" && config.TEST_MODE && (
+        {!launchState && admin.role === "ADMIN" && config.TEST_MODE && (
           <form action={prepareLaunch}>
             <button>Prepare one-time production launch</button>
           </form>
@@ -227,7 +240,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
       <form action={saveProjectManager} className="card settings-form">
         <h3>Invite project manager</h3>
         <label>Name<input name="name" defaultValue={config.PROJECT_MANAGER_NAME} required /></label>
-        <label>Email<input name="email" type="email" defaultValue={config.PROJECT_MANAGER_EMAIL ?? ""} required /></label>
+        <label>Email<input name="email" type="email" value={PORTAL_USER_EMAIL} readOnly required /></label>
         <label>Phone<input name="phone" defaultValue={config.PROJECT_MANAGER_PHONE ?? ""} /></label>
         <label>Notification channel<select name="notificationChannel" defaultValue="EMAIL"><option value="EMAIL">Email</option><option value="SMS">SMS</option><option value="BOTH">Email and SMS</option></select></label>
         <label>Daily brief time<input name="dailyBriefTime" type="time" defaultValue={config.PROJECT_MANAGER_DAILY_BRIEF_TIME} /></label>

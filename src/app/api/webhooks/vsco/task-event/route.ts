@@ -5,18 +5,19 @@ import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { reconcileEventReadiness } from "@/services/readiness";
 import { isVscoTaskWebhookAuthorized } from "@/lib/vsco-task-webhook";
+import { readLimitedText, RequestBodyTooLargeError } from "@/lib/http-security";
 
 const Payload = z.object({
-  providerEventId: z.string().min(1),
+  providerEventId: z.string().min(1).max(200),
   eventType: z.enum(["task.completed", "job.stage_changed", "milestone.reached"]),
-  jobId: z.string().min(1),
-  jobName: z.string().optional(),
-  taskId: z.string().optional(),
-  taskName: z.string().optional(),
-  eventDate: z.string().optional(),
-  stage: z.string().optional(),
+  jobId: z.string().min(1).max(200),
+  jobName: z.string().max(500).optional(),
+  taskId: z.string().max(200).optional(),
+  taskName: z.string().max(500).optional(),
+  eventDate: z.string().max(100).optional(),
+  stage: z.string().max(200).optional(),
   completedAt: z.string().datetime({ offset: true }).optional(),
-}).passthrough();
+});
 
 export async function POST(request: Request) {
   const url = new URL(request.url);
@@ -26,8 +27,10 @@ export async function POST(request: Request) {
   }
   let payload: z.infer<typeof Payload>;
   try {
-    payload = Payload.parse(await request.json());
-  } catch {
+    const raw = await readLimitedText(request, 64 * 1024);
+    payload = Payload.parse(JSON.parse(raw));
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return new NextResponse("Payload too large", { status: 413 });
     return new NextResponse("Invalid task event", { status: 400 });
   }
   const webhook = await db.webhookEvent.upsert({
