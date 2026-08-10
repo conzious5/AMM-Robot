@@ -37,15 +37,9 @@ npm run db:seed
 npm run dev
 ```
 
-Run the worker separately with `npm run worker`. Run one reconciliation cycle with `npm run sync`. Set `DEMO_SEED=true npm run db:seed` for demonstration records. The fallback development login is `admin@example.com` / `change-me-before-production`; never use it in production.
+Run the worker separately with `npm run worker`. Run one reconciliation cycle with `npm run sync`. Set `DEMO_SEED=true npm run db:seed` for demonstration records. There is no fallback or automatically seeded administrator login. Production administrator provisioning is a controlled one-time operation, and runtime authentication recognizes only the approved administrator identity and role.
 
-Generate a production admin hash:
-
-```bash
-node -e "require('bcryptjs').hash(process.argv[1],12).then(console.log)" 'a-long-unique-password'
-```
-
-Set `AUTH_SECRET` to at least 32 random characters, `ADMIN_EMAIL`, and `ADMIN_PASSWORD_HASH` before deployment.
+Set `AUTH_SECRET` to at least 32 random characters before deployment.
 
 ## Environment variables
 
