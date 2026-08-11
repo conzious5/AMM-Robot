@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
 import { communicationChannelLabel } from "@/lib/channels";
 import { launchIncludedEventWhere } from "@/lib/launch-cutoff";
+import { recentOperationsAgentResult } from "@/lib/operations-agent-result";
 import { db } from "@/lib/db";
 import {
   addOperationalNote,
@@ -106,12 +107,18 @@ export default async function Page() {
       },
       orderBy: { startsAt: "asc" },
     }),
-    db.operationalAlert.findMany({ where: { status: "OPEN" }, include: { event: true, person: true, assignment: true }, orderBy: [{ severity: "asc" }, { firstSeenAt: "asc" }] }),
+    db.operationalAlert.findMany({
+      where: { status: "OPEN", OR: [{ eventId: null }, { event: { startsAt: { gte: now } } }] },
+      include: { event: true, person: true, assignment: true },
+      orderBy: [{ severity: "asc" }, { firstSeenAt: "asc" }],
+    }),
     db.eventChange.findMany({ include: { event: true }, orderBy: { createdAt: "desc" }, take: 25 }),
     db.plannedAction.findMany({ where: { status: { in: ["PLANNED", "QUEUED", "FAILED"] } }, include: { event: true, person: true }, orderBy: { scheduledFor: "asc" }, take: 25 }),
     db.person.findMany({ where: { active: true }, orderBy: { displayName: "asc" } }),
     db.setting.findUnique({ where: { key: `project-manager-agent:last:${admin.id}` } }),
-    db.operationalAlert.count({ where: { status: "OPEN", type: "SCHEDULING_CONFLICT" } }),
+    db.operationalAlert.count({
+      where: { status: "OPEN", type: "SCHEDULING_CONFLICT", OR: [{ eventId: null }, { event: { startsAt: { gte: now } } }] },
+    }),
   ]);
   const ready = events.filter(event => event.readinessStatus === "READY");
   const needsAttention = events.filter(event => event.readinessStatus !== "READY");
@@ -119,7 +126,7 @@ export default async function Page() {
   const unfilled = alerts.filter(alert => alert.type === "REQUIRED_ROLE_UNFILLED").length;
   const unconfirmed = events.reduce((total, event) => total + event.assignments.filter(item => item.confirmationStatus !== "CONFIRMED").length, 0);
   const withinSeven = events.filter(event => event.startsAt <= sevenDays).length;
-  const lastAgent = agentResult?.value as { question?: string; answer?: string } | null;
+  const lastAgent = recentOperationsAgentResult(agentResult?.value, now);
 
   return (
     <>

@@ -11,6 +11,7 @@ import { brandedEmailHtml } from "@/services/messaging";
 import { isActiveInboundContractor } from "@/lib/inbound-identity";
 import { renderGroundedScheduleReply, safeScheduleRange } from "@/services/agent";
 import { readLimitedText, RequestBodyTooLargeError } from "@/lib/http-security";
+import { recentOperationsAgentResult } from "@/lib/operations-agent-result";
 
 describe("VSCO normalization",()=>{it("preserves offset and assignments",()=>{const x=normalizeVscoEvent({id:12,name:"Wedding",start:"2026-08-12T15:00:00-06:00",timezone:"America/Denver",venue:{name:"Manor"},assignments:[{id:4,role:"Videographer",teamMember:{id:8,firstName:"A",lastName:"B",email:"a@example.com"}}]});expect(x.externalId).toBe("12");expect(x.startsAt.toISOString()).toBe("2026-08-12T21:00:00.000Z");expect(x.assignments?.[0].teamMember.id).toBe("8")});it("reports missing assignments as null",()=>expect(normalizeVscoEvent({id:"1",name:"W",start:"2026-08-12T15:00:00Z"}).assignments).toBeNull())});
 describe("booked gig detection",()=>{it.each(["Photographer","Lead Photographer","Videographer","Video"])("%s is production",role=>expect(isProductionAssignment({role,teamMember:{firstName:"A",lastName:"B"}})).toBe(true));it.each(["Sales","Planner","Partner 1 Prep","Client"])("%s is not production",role=>expect(isProductionAssignment({role,teamMember:{firstName:"A",lastName:"B"}})).toBe(false))});
@@ -111,5 +112,25 @@ describe("request body limits", () => {
   });
   it("rejects a request over its byte limit", async () => {
     await expect(readLimitedText(new Request("https://example.test", { method: "POST", body: "too large" }), 4)).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+  });
+});
+
+describe("operations agent result freshness", () => {
+  const now = new Date("2026-08-10T23:00:00.000Z");
+
+  it("does not keep a past event list on the Operations page", () => {
+    expect(recentOperationsAgentResult({
+      question: "Which weddings need attention?",
+      answer: "Wedding Ceremony — 8/2/2026 — at risk",
+      at: "2026-08-09T23:00:00.000Z",
+    }, now)).toBeNull();
+  });
+
+  it("keeps a newly generated answer long enough to read", () => {
+    expect(recentOperationsAgentResult({
+      question: "Which weddings need attention?",
+      answer: "Upcoming Wedding — 8/16/2026 — waiting for confirmation",
+      at: "2026-08-10T22:50:00.000Z",
+    }, now)?.answer).toContain("Upcoming Wedding");
   });
 });
