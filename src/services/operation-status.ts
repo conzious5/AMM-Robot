@@ -34,6 +34,13 @@ export function isDismissibleOperationErrorKey(errorKey: string) {
   return dismissiblePrefixes.some(prefix => errorKey.startsWith(prefix));
 }
 
+export function webhookFailureHasRecovered(
+  failed: { provider: string; type: string; receivedAt: Date },
+  completed: { provider: string; type: string; receivedAt: Date }[],
+) {
+  return completed.some(item => item.provider === failed.provider && item.type === failed.type && item.receivedAt > failed.receivedAt);
+}
+
 export async function dismissOperationError(administratorId: string, errorKey: string) {
   if (!isDismissibleOperationErrorKey(errorKey)) throw new Error("This error type cannot be dismissed here.");
   const [prefix, id] = errorKey.split(":", 2);
@@ -123,6 +130,7 @@ export async function getOperationOverview() {
     latestSync,
     failedActions,
     failedWebhooks,
+    completedWebhooks,
     failedMessages,
     failedAgentRuns,
     failedSyncRuns,
@@ -143,6 +151,12 @@ export async function getOperationOverview() {
       where: { status: "FAILED" },
       orderBy: { receivedAt: "desc" },
       take: 25,
+    }),
+    db.webhookEvent.findMany({
+      where: { status: "COMPLETED" },
+      select: { provider: true, type: true, receivedAt: true },
+      orderBy: { receivedAt: "desc" },
+      take: 250,
     }),
     db.message.findMany({
       where: {
@@ -184,6 +198,7 @@ export async function getOperationOverview() {
   ]);
 
   const dismissedKeys = new Set(dismissalSettings.map(setting => setting.key.slice(dismissalPrefix.length)));
+  const currentFailedWebhooks = failedWebhooks.filter(webhook => !webhookFailureHasRecovered(webhook, completedWebhooks));
   const failedDeveloperAlerts = developerAlertSettings.filter(setting => valueRecord(setting.value).status === "FAILED");
   const relevantOpenUrgentAlerts = openUrgentAlerts.filter(alert => !alert.event?.internalNotes?.includes("[LAUNCH_CUTOFF_EXCLUDED]"));
   const launch = valueRecord(launchSetting?.value);
@@ -233,7 +248,7 @@ export async function getOperationOverview() {
       href: "/actions",
       dismissible: true,
     })),
-    ...failedWebhooks.map(webhook => ({
+    ...currentFailedWebhooks.map(webhook => ({
       key: `webhook:${webhook.id}`,
       when: webhook.receivedAt,
       area: `${webhook.provider} update`,

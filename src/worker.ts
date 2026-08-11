@@ -1,4 +1,5 @@
 import { Worker } from "bullmq";
+import { Prisma } from "@prisma/client";
 import { connection } from "@/lib/queue";
 import { sendPlannedAction } from "@/services/messaging";
 import { log } from "@/lib/log";
@@ -10,6 +11,7 @@ import { notifyProjectManagers } from "@/services/project-manager";
 import { notifySystemDeveloper } from "@/services/developer-alerts";
 import { env } from "@/lib/env";
 import { isActiveInboundContractor } from "@/lib/inbound-identity";
+import { parseQuoInboundMessage } from "@/lib/quo-webhook";
 
 const worker = new Worker("planned-actions", async job => sendPlannedAction(job.data.actionId as string), { connection, concurrency: 10 });
 
@@ -90,11 +92,15 @@ const webhookWorker = new Worker("webhooks", async job => {
         }
       }
     } else if (event.provider === "QUO" && /message\.received|message\.incoming|incoming/i.test(event.type)) {
-      const data = payload.data?.object ?? payload.data ?? payload;
-      const senderRaw = data.from ?? data.sender?.phoneNumber ?? data.phoneNumber;
-      const text = data.text ?? data.content ?? data.body;
-      if (!senderRaw || !text) throw new Error("Quo inbound payload lacks sender or content");
-      const { person, phone, testAlias } = await resolveInboundSmsPerson(String(senderRaw));
+      const inbound = parseQuoInboundMessage(payload);
+      if (!inbound) {
+        await db.webhookEvent.update({
+          where: { id: event.id },
+          data: { status: "COMPLETED", processedAt: new Date(), error: "Ignored: inbound update contains no processable text message" },
+        });
+        return;
+      }
+      const { person, phone, testAlias } = await resolveInboundSmsPerson(inbound.sender);
       if (!person) {
         await db.webhookEvent.update({
           where: { id: event.id },
@@ -103,10 +109,10 @@ const webhookWorker = new Worker("webhooks", async job => {
         return;
       }
       const conversation = await db.conversation.upsert({ where: { personId_channel: { personId: person.id, channel: "SMS" } }, update: { lastMessageAt: new Date() }, create: { personId: person.id, channel: "SMS" } });
-      await db.message.upsert({ where: { providerMessageId: String(data.id) }, update: {}, create: { conversationId: conversation.id, personId: person.id, direction: "INBOUND", channel: "SMS", provider: "QUO", providerMessageId: String(data.id), sender: phone, recipient: String(data.to ?? ""), textContent: String(text), deliveryStatus: "RECEIVED", authorType: "CONTRACTOR", receivedAt: new Date(), rawProviderPayload: data } });
-      const intent = deterministicIntent(String(text));
-      const deterministic = (testAlias && dryRunTestReply(intent)) || await handleDeterministic(person.id, String(text), "SMS");
-      if (!testAlias && /\b(conflict|double.booked|cannot work|can't work|unavailable)\b/i.test(String(text))) {
+      await db.message.upsert({ where: { providerMessageId: inbound.id }, update: {}, create: { conversationId: conversation.id, personId: person.id, direction: "INBOUND", channel: "SMS", provider: "QUO", providerMessageId: inbound.id, sender: phone, recipient: inbound.recipient, textContent: inbound.text, deliveryStatus: "RECEIVED", authorType: "CONTRACTOR", receivedAt: new Date(), rawProviderPayload: inbound.raw as Prisma.InputJsonValue } });
+      const intent = deterministicIntent(inbound.text);
+      const deterministic = (testAlias && dryRunTestReply(intent)) || await handleDeterministic(person.id, inbound.text, "SMS");
+      if (!testAlias && /\b(conflict|double.booked|cannot work|can't work|unavailable)\b/i.test(inbound.text)) {
         const key = `scheduling-conflict:${event.providerEventId}`;
         const conflictAlert = await db.operationalAlert.upsert({
           where: { deduplicationKey: key },
@@ -128,7 +134,7 @@ const webhookWorker = new Worker("webhooks", async job => {
           deduplicationKey: `alert:${conflictAlert.id}:${conflictAlert.firstSeenAt.toISOString()}`,
         });
       }
-      const reply = deterministic ?? await answerScheduleQuestion(person.id, String(text));
+      const reply = deterministic ?? await answerScheduleQuestion(person.id, inbound.text);
       const action = await db.plannedAction.upsert({
         where: { idempotencyKey: `reply:quo:${event.providerEventId}` },
         update: {},

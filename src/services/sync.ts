@@ -4,7 +4,7 @@ import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { planAssignmentReminders } from "@/lib/reminders";
-import { VscoWorkspaceProvider } from "@/providers/vsco";
+import { VscoWorkspaceProvider, type VscoWedgewoodContact } from "@/providers/vsco";
 import { notifyProjectManagers } from "@/services/project-manager";
 import { notifySystemDeveloper } from "@/services/developer-alerts";
 
@@ -26,8 +26,8 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
           const existing = await db.event.findUnique({ where: { vscoEventId: item.externalId }, include: { assignments: true } });
           const event = await db.event.upsert({
             where: { vscoEventId: item.externalId },
-            update: { vscoJobId: item.jobId, name: item.name, eventType: item.eventType, startsAt: item.startsAt, endsAt: item.endsAt, timezone: item.timezone, venueName: item.venueName, address: item.address, canceled: item.canceled, status: item.canceled ? "CANCELED" : "SCHEDULED", rawProviderPayload: item.raw as object, lastSyncedAt: new Date() },
-            create: { vscoEventId: item.externalId, vscoJobId: item.jobId, name: item.name, eventType: item.eventType, startsAt: item.startsAt, endsAt: item.endsAt, timezone: item.timezone, venueName: item.venueName, address: item.address, canceled: item.canceled, status: item.canceled ? "CANCELED" : "SCHEDULED", rawProviderPayload: item.raw as object, lastSyncedAt: new Date() },
+            update: { vscoJobId: item.jobId, name: item.name, administrativeUrl: item.administrativeUrl, eventType: item.eventType, startsAt: item.startsAt, endsAt: item.endsAt, timezone: item.timezone, venueName: item.venueName, address: item.address, canceled: item.canceled, status: item.canceled ? "CANCELED" : "SCHEDULED", rawProviderPayload: item.raw as object, lastSyncedAt: new Date() },
+            create: { vscoEventId: item.externalId, vscoJobId: item.jobId, name: item.name, administrativeUrl: item.administrativeUrl, eventType: item.eventType, startsAt: item.startsAt, endsAt: item.endsAt, timezone: item.timezone, venueName: item.venueName, address: item.address, canceled: item.canceled, status: item.canceled ? "CANCELED" : "SCHEDULED", rawProviderPayload: item.raw as object, lastSyncedAt: new Date() },
           });
           if (existing) stats.updated++;
           else stats.created++;
@@ -126,10 +126,47 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
       await db.syncRun.update({ where: { id: run.id }, data: { cursor: page.cursor } });
     }
     await archiveExcludedAndDuplicateEvents();
+    await syncWedgewoodDirectory(await provider.wedgewoodDirectoryContacts());
     return await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: stats.failed ? "PARTIAL" : "SUCCEEDED", itemsFetched: stats.fetched, itemsCreated: stats.created, itemsUpdated: stats.updated, itemsSkipped: stats.skipped, itemsFailed: stats.failed, details: stats } });
   } catch (error) {
     await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: "FAILED", errorSummary: error instanceof Error ? error.message : "Unknown error", details: stats } });
     throw error;
+  }
+}
+
+async function syncWedgewoodDirectory(contacts: VscoWedgewoodContact[]) {
+  const syncedAt = new Date();
+  for (const contact of contacts) {
+    const existing = await db.wedgewoodContact.findUnique({ where: { sourceKey: contact.sourceKey } });
+    if (existing?.manuallyEdited) {
+      await db.wedgewoodContact.update({
+        where: { id: existing.id },
+        data: { lastSyncedAt: syncedAt, rawProviderPayload: contact.raw as object },
+      });
+      continue;
+    }
+    await db.wedgewoodContact.upsert({
+      where: { sourceKey: contact.sourceKey },
+      update: {
+        venueName: contact.venueName,
+        contactName: contact.contactName,
+        teamOrRole: contact.teamOrRole,
+        email: contact.email,
+        active: true,
+        rawProviderPayload: contact.raw as object,
+        lastSyncedAt: syncedAt,
+      },
+      create: {
+        sourceKey: contact.sourceKey,
+        venueName: contact.venueName,
+        contactName: contact.contactName,
+        teamOrRole: contact.teamOrRole,
+        email: contact.email,
+        source: "VSCO",
+        rawProviderPayload: contact.raw as object,
+        lastSyncedAt: syncedAt,
+      },
+    });
   }
 }
 

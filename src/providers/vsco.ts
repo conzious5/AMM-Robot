@@ -27,8 +27,16 @@ const Event = z.object({
   assignments: z.array(Assignment).optional(),
 }).passthrough();
 export type NormalizedVscoEvent = {
-  externalId: string; jobId?: string; name: string; eventType: string; startsAt: Date; endsAt?: Date;
+  externalId: string; jobId?: string; name: string; administrativeUrl?: string; eventType: string; startsAt: Date; endsAt?: Date;
   timezone: string; venueName?: string; address?: string; canceled: boolean; assignments: z.infer<typeof Assignment>[] | null; raw: unknown;
+};
+export type VscoWedgewoodContact = {
+  sourceKey: string;
+  venueName: string;
+  contactName?: string;
+  teamOrRole?: string;
+  email: string;
+  raw: unknown;
 };
 export type VscoTimelineFile = {
   id: string;
@@ -68,10 +76,21 @@ export function normalizeVscoEvent(input: unknown): NormalizedVscoEvent {
   };
 }
 
+export function vscoJobPresentation(input: unknown) {
+  const parsed = OfficialJob.safeParse(input);
+  if (!parsed.success) return { title: undefined, administrativeUrl: undefined };
+  return {
+    title: parsed.data.title?.trim() || undefined,
+    administrativeUrl: parsed.data.links?.self?.managerHref ?? undefined,
+  };
+}
+
 export class VscoWorkspaceProvider {
   private readonly contacts = new Map<string, z.infer<typeof OfficialContact>>();
   private readonly roles = new Map<string, z.infer<typeof OfficialJobRole>>();
   private readonly jobContacts = new Map<string, z.infer<typeof OfficialJobContact>[]>();
+  private readonly jobs = new Map<string, z.infer<typeof OfficialJob>>();
+  private readonly jobVenues = new Map<string, Set<string>>();
   private readonly ceremonyJobs = new Set<string>();
   private assignmentsLoaded = false;
 
@@ -104,10 +123,18 @@ export class VscoWorkspaceProvider {
         if (!assignments.length) continue;
         if (event.jobId) this.ceremonyJobs.add(event.jobId);
         const address = event.location?.address;
+        const job = event.jobId ? this.jobs.get(event.jobId) : undefined;
+        const project = vscoJobPresentation(job);
+        if (event.jobId && address?.name) {
+          const venues = this.jobVenues.get(event.jobId) ?? new Set<string>();
+          venues.add(address.name);
+          this.jobVenues.set(event.jobId, venues);
+        }
         normalized.push({
           externalId: event.id,
           jobId: event.jobId ?? undefined,
-          name: event.name || "Untitled event",
+          name: project.title || event.name || "Untitled event",
+          administrativeUrl: project.administrativeUrl,
           eventType: "Wedding",
           startsAt,
           endsAt: event.endUtc ? new Date(event.endUtc) : undefined,
@@ -123,6 +150,37 @@ export class VscoWorkspaceProvider {
       yield { events: normalized, cursor: page < totalPages ? String(page + 1) : undefined };
       page++;
     } while (page <= totalPages);
+  }
+
+  async wedgewoodDirectoryContacts(): Promise<VscoWedgewoodContact[]> {
+    await this.loadAssignmentData();
+    const result: VscoWedgewoodContact[] = [];
+    const seen = new Set<string>();
+    for (const contact of this.contacts.values()) {
+      const email = contact.email?.trim().toLowerCase();
+      if (!email || !isWedgewoodContact(contact)) continue;
+      const links = [...this.jobContacts.values()].flat().filter(link => link.contactId === contact.id);
+      const associatedVenues = new Set<string>();
+      for (const link of links) for (const venue of this.jobVenues.get(link.jobId) ?? []) associatedVenues.add(venue);
+      const venueFromContact = contactVenue(contact);
+      if (venueFromContact) associatedVenues.add(venueFromContact);
+      if (!associatedVenues.size) associatedVenues.add("Wedgewood Weddings");
+      const roleNames = new Set(links.flatMap(link => link.jobRoles.flatMap(roleId => roleId ? [this.roles.get(roleId)?.name].filter((value): value is string => Boolean(value)) : [])));
+      for (const venueName of associatedVenues) {
+        const sourceKey = `${contact.id}:${venueName.toLowerCase()}`;
+        if (seen.has(sourceKey)) continue;
+        seen.add(sourceKey);
+        result.push({
+          sourceKey,
+          venueName,
+          contactName: contactDisplayName(contact),
+          teamOrRole: [...roleNames].join(", ") || undefined,
+          email,
+          raw: contact,
+        });
+      }
+    }
+    return result;
   }
 
   async timelineFiles(jobId: string): Promise<VscoTimelineFile[]> {
@@ -175,10 +233,11 @@ export class VscoWorkspaceProvider {
 
   private async loadAssignmentData() {
     if (this.assignmentsLoaded) return;
-    const [links, contacts, roles] = await Promise.all([
+    const [links, contacts, roles, jobs] = await Promise.all([
       this.collection("/job-contact"),
       this.collection("/address-book"),
       this.collection("/job-role"),
+      this.collection("/job"),
     ]);
     for (const input of contacts.items) {
       const parsed = OfficialContact.safeParse(input);
@@ -187,6 +246,10 @@ export class VscoWorkspaceProvider {
     for (const input of roles.items) {
       const parsed = OfficialJobRole.safeParse(input);
       if (parsed.success) this.roles.set(parsed.data.id, parsed.data);
+    }
+    for (const input of jobs.items) {
+      const parsed = OfficialJob.safeParse(input);
+      if (parsed.success) this.jobs.set(parsed.data.id, parsed.data);
     }
     for (const input of links.items) {
       const parsed = OfficialJobContact.safeParse(input);
@@ -293,6 +356,14 @@ const OfficialJobRole = z.object({
   kind: z.string().nullable().optional(),
 }).passthrough();
 
+const OfficialJob = z.object({
+  id: z.string(),
+  title: z.string().nullable().optional(),
+  links: z.object({
+    self: z.object({ managerHref: z.string().url().nullable().optional() }).passthrough().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
 const OfficialFile = z.object({
   id: z.string(),
   name: z.string().nullable().optional(),
@@ -306,4 +377,23 @@ const OfficialFile = z.object({
 const modifiedTime = (value?: string | null) => {
   const parsed = Date.parse(value ?? "");
   return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const contactDisplayName = (contact: z.infer<typeof OfficialContact>) =>
+  (contact.name ?? [contact.firstName, contact.lastName].filter(Boolean).join(" ")).trim() || undefined;
+
+const contactVenue = (contact: z.infer<typeof OfficialContact>) => {
+  const record = contact as Record<string, unknown>;
+  for (const key of ["venueName", "companyName", "organizationName", "company", "organization"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (value && typeof value === "object" && "name" in value && typeof value.name === "string") return value.name.trim();
+  }
+  return undefined;
+};
+
+export const isWedgewoodContact = (contact: unknown) => {
+  if (!contact || typeof contact !== "object") return false;
+  const text = JSON.stringify(contact).toLowerCase();
+  return text.includes("wedgewood") || text.includes("wedgewoodweddings.com");
 };

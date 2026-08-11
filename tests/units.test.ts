@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 process.env.DATABASE_URL ||= "postgresql://test:test@localhost:5432/test";
-import { isProductionAssignment, isTimelineFile, normalizeVscoEvent } from "@/providers/vsco";
+import { isProductionAssignment, isTimelineFile, isWedgewoodContact, normalizeVscoEvent, vscoJobPresentation } from "@/providers/vsco";
 import { deterministicIntent, isFinancialQuestion, requestedEventDate, selectRequestedAssignment, standardPayReply } from "@/services/inbound";
 import { nextAllowedTime, outsideQuietHours } from "@/lib/quiet-hours";
 import { createOpaqueToken, sha256, verifyHmac, verifyQuoWebhook } from "@/lib/crypto";
@@ -12,8 +12,39 @@ import { isActiveInboundContractor } from "@/lib/inbound-identity";
 import { renderGroundedScheduleReply, safeScheduleRange } from "@/services/agent";
 import { readLimitedText, RequestBodyTooLargeError } from "@/lib/http-security";
 import { recentOperationsAgentResult } from "@/lib/operations-agent-result";
+import { parseQuoInboundMessage } from "@/lib/quo-webhook";
 
 describe("VSCO normalization",()=>{it("preserves offset and assignments",()=>{const x=normalizeVscoEvent({id:12,name:"Wedding",start:"2026-08-12T15:00:00-06:00",timezone:"America/Denver",venue:{name:"Manor"},assignments:[{id:4,role:"Videographer",teamMember:{id:8,firstName:"A",lastName:"B",email:"a@example.com"}}]});expect(x.externalId).toBe("12");expect(x.startsAt.toISOString()).toBe("2026-08-12T21:00:00.000Z");expect(x.assignments?.[0].teamMember.id).toBe("8")});it("reports missing assignments as null",()=>expect(normalizeVscoEvent({id:"1",name:"W",start:"2026-08-12T15:00:00Z"}).assignments).toBeNull())});
+describe("VSCO project presentation", () => {
+  it("uses the exact VSCO job title and manager link", () => {
+    expect(vscoJobPresentation({
+      id: "job-1",
+      title: "Taylor Smith and Morgan Lee's Photography on Saturday, September 19th, 2026",
+      links: { self: { managerHref: "https://workspace.vsco.co/jobs/view/123456" } },
+    })).toEqual({
+      title: "Taylor Smith and Morgan Lee's Photography on Saturday, September 19th, 2026",
+      administrativeUrl: "https://workspace.vsco.co/jobs/view/123456",
+    });
+  });
+});
+describe("Wedgewood directory detection", () => {
+  it("recognizes Wedgewood email and organization data", () => {
+    expect(isWedgewoodContact({ email: "planner@wedgewoodweddings.com" })).toBe(true);
+    expect(isWedgewoodContact({ companyName: "Wedgewood Weddings" })).toBe(true);
+    expect(isWedgewoodContact({ email: "other@example.com" })).toBe(false);
+  });
+});
+describe("Quo inbound webhook parsing", () => {
+  it("parses the documented API envelope", () => {
+    expect(parseQuoInboundMessage({ id: "EV1", data: { object: { id: "MSG1", from: "+13035550100", to: ["+13035550101"], text: "HOURS" } } })).toMatchObject({ id: "MSG1", sender: "+13035550100", recipient: "+13035550101", text: "HOURS" });
+  });
+  it("parses app-webhook body fields and nested senders", () => {
+    expect(parseQuoInboundMessage({ data: { message: { id: "MSG2", sender: { phoneNumber: "+13035550100" }, to: "+13035550101", body: "HELP" } } })).toMatchObject({ id: "MSG2", sender: "+13035550100", text: "HELP" });
+  });
+  it("safely ignores media-only updates without sender or text", () => {
+    expect(parseQuoInboundMessage({ id: "EV3", data: { object: { id: "MSG3", media: [{ type: "image/jpeg" }] } } })).toBeNull();
+  });
+});
 describe("booked gig detection",()=>{it.each(["Photographer","Lead Photographer","Videographer","Video"])("%s is production",role=>expect(isProductionAssignment({role,teamMember:{firstName:"A",lastName:"B"}})).toBe(true));it.each(["Sales","Planner","Partner 1 Prep","Client"])("%s is not production",role=>expect(isProductionAssignment({role,teamMember:{firstName:"A",lastName:"B"}})).toBe(false))});
 describe("deterministic inbound",()=>{it.each([["CONFIRM","CONFIRM"],["yes!","CONFIRM"],["decline","DECLINE"],["STOP","STOP"],["MENU","HELP"],["show my assignment details","DETAILS"],["send the timeline","TIMELINE"],["job day sheet","TIMELINE"],["what ceremonies are upcoming?","SCHEDULE"],["where is my venue?","LOCATION"],["what time does it start?","HOURS"],["What is my rate?","PAY"],["PAY","PAY"],["show my invoice","FINANCIAL"],["What is next?","NATURAL_LANGUAGE"]])("%s", (text,intent)=>expect(deterministicIntent(text)).toBe(intent));it("blocks nonstandard financial questions",()=>{expect(isFinancialQuestion("When do I get paid?")).toBe(true);expect(isFinancialQuestion("Where is my ceremony?")).toBe(false)});it("calculates mileage from total trip miles",()=>{expect(standardPayReply("What is travel pay for 400 miles?")).toContain("$190.40");expect(standardPayReply("100 miles")).toContain("$0.00")})});
 describe("date-specific inbound assignment selection", () => {

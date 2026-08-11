@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 process.env.DATABASE_URL ||= "postgresql://test:test@localhost:5432/test";
 import type { ReadinessInput } from "@/services/readiness";
-import { evaluateReadiness } from "@/services/readiness";
+import { evaluateReadiness, isMaterialPostConfirmationChange } from "@/services/readiness";
 import { deriveTaskStatus } from "@/services/tasks";
 import { groupEventsForBrief, projectManagerNotificationKey } from "@/services/project-manager";
 import { assertCanEditProjectManagerProfile, canAccessAdministrativeArea, canEditProjectManagerProfile, hasPermission } from "@/lib/permissions";
@@ -9,7 +9,7 @@ import { classifyProjectManagerQuestion, projectManagerToolNames } from "@/lib/p
 import { isVscoTaskWebhookAuthorized } from "@/lib/vsco-task-webhook";
 import { assignmentIsInsideLaunchExclusion, contractorLaunchEligibility } from "@/services/go-live";
 import { administratorInviteIsUsable, administratorInviteKey } from "@/lib/admin-invite";
-import { isDismissibleOperationErrorKey, operationErrorDismissalSettingKey } from "@/services/operation-status";
+import { isDismissibleOperationErrorKey, operationErrorDismissalSettingKey, webhookFailureHasRecovered } from "@/services/operation-status";
 import { resolveCommunicationServiceStatus } from "@/services/service-control";
 import { localDateKey, nextUnoccupiedLocalDay } from "@/lib/quiet-hours";
 import { communicationChannelLabel } from "@/lib/channels";
@@ -50,6 +50,13 @@ describe("project-manager acceptance", () => {
 
   it("flags venue or time changes after confirmation", () => {
     expect(evaluateReadiness(base({ materialChangeAfterConfirmation: true })).status).toBe("CHANGED_SINCE_CONFIRMATION");
+  });
+
+  it("replans calendar timing quietly without treating it as a reconfirmation incident", () => {
+    expect(isMaterialPostConfirmationChange("startsAt")).toBe(false);
+    expect(isMaterialPostConfirmationChange("endsAt")).toBe(false);
+    expect(isMaterialPostConfirmationChange("venueName")).toBe(true);
+    expect(isMaterialPostConfirmationChange("assignment")).toBe(true);
   });
 
   it("groups daily-brief events by operational state", () => {
@@ -203,6 +210,12 @@ describe("project-manager acceptance", () => {
     expect(isDismissibleOperationErrorKey("alert:alert-1")).toBe(false);
     expect(isDismissibleOperationErrorKey("anything:unsafe")).toBe(false);
     expect(operationErrorDismissalSettingKey("sync:run-1")).toBe("operation-error-dismissal:sync:run-1");
+  });
+
+  it("keeps recovered provider failures in history without showing a current outage", () => {
+    const failed = { provider: "QUO", type: "message.received", receivedAt: new Date("2026-08-07T22:18:46Z") };
+    expect(webhookFailureHasRecovered(failed, [{ ...failed, receivedAt: new Date("2026-08-09T23:54:44Z") }])).toBe(true);
+    expect(webhookFailureHasRecovered(failed, [{ provider: "QUO", type: "message.delivered", receivedAt: new Date("2026-08-09T23:54:44Z") }])).toBe(false);
   });
 
   it("allows project managers to resend and send communications", () => {

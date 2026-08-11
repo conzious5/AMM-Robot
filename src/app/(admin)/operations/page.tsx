@@ -92,6 +92,12 @@ function reasons(value: unknown) {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+function linkedEventTitle(event: { name: string; administrativeUrl: string | null }) {
+  return event.administrativeUrl
+    ? <Link href={event.administrativeUrl} target="_blank" rel="noreferrer">{event.name}</Link>
+    : event.name;
+}
+
 export default async function Page() {
   const admin = await requireAdmin();
   const now = new Date();
@@ -167,11 +173,11 @@ export default async function Page() {
           <article className="card operations-event" id={`event-${event.id}`} key={event.id}>
             <div className="operations-heading">
               <div>
-                <h3>{event.name}</h3>
+                <h3>{linkedEventTitle(event)}</h3>
                 <p>{event.startsAt.toLocaleString()} · {differenceInCalendarDays(event.startsAt, now)} days remaining</p>
                 <span className="pill">{event.readinessStatus.replaceAll("_", " ")}</span>
               </div>
-              {event.administrativeUrl && <Link className="button secondary" href={event.administrativeUrl}>Open VSCO job</Link>}
+              {event.administrativeUrl && <Link className="button secondary" href={event.administrativeUrl} target="_blank" rel="noreferrer">Open VSCO job</Link>}
             </div>
             <ul>{eventReasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
             <div className="operations-context">
@@ -180,16 +186,27 @@ export default async function Page() {
               <span><b>Next action:</b> {nextAction ? `${nextAction.scheduledFor.toLocaleString()} · ${communicationChannelLabel(nextAction.channel)} · ${nextAction.reason}` : "None planned"}</span>
             </div>
 
-            {eventAlerts.map(alert => (
-              <div className="alert-row" key={alert.id}>
+            {eventAlerts.map(alert => {
+              const resendTargets = event.assignments.filter(assignment =>
+                assignment.confirmationStatus !== "CONFIRMED"
+                && (alert.assignmentId === assignment.id || alert.reason.toLowerCase().includes(assignment.person.displayName.toLowerCase()))
+              );
+              return <div className="alert-row" key={alert.id}>
                 <div><b>{alert.severity}</b> · {alert.reason}<br /><span className="muted">{alert.recommendedAction}</span></div>
-                <form action={operate}>
-                  <input type="hidden" name="nonce" value={`resolve:${alert.id}:${randomUUID()}`} />
-                  <input type="hidden" name="alertId" value={alert.id} />
-                  <button name="op" value="resolve">Resolve alert</button>
-                </form>
+                <div className="action-controls">
+                  {resendTargets.map(assignment => <form action={operate} key={assignment.id}>
+                    <input type="hidden" name="nonce" value={`alert-resend:${alert.id}:${assignment.id}:${randomUUID()}`} />
+                    <input type="hidden" name="assignmentId" value={assignment.id} />
+                    <button name="op" value="resend">Resend to {assignment.person.firstName || assignment.person.displayName}</button>
+                  </form>)}
+                  <form action={operate}>
+                    <input type="hidden" name="nonce" value={`resolve:${alert.id}:${randomUUID()}`} />
+                    <input type="hidden" name="alertId" value={alert.id} />
+                    <button className="secondary" name="op" value="resolve">Resolve alert</button>
+                  </form>
+                </div>
               </div>
-            ))}
+            })}
 
             <h4>Assignments</h4>
             {event.assignments.map(assignment => (
@@ -301,17 +318,17 @@ export default async function Page() {
 
       <h2>Ready to go</h2>
       <table><thead><tr><th>Event</th><th>Date</th><th>Venue</th><th>Staff</th></tr></thead><tbody>
-        {ready.map(event => <tr key={event.id}><td>{event.name}</td><td>{event.startsAt.toLocaleString()}</td><td>{event.venueName ?? "Pending"}</td><td>{event.assignments.map(item => `${item.person.displayName} (${item.role.toLowerCase()})`).join(", ")}</td></tr>)}
+        {ready.map(event => <tr key={event.id}><td>{linkedEventTitle(event)}</td><td>{event.startsAt.toLocaleString()}</td><td>{event.venueName ?? "Pending"}</td><td>{event.assignments.map(item => `${item.person.displayName} (${item.role.toLowerCase()})`).join(", ")}</td></tr>)}
       </tbody></table>
 
       <h2>Recent VSCO changes</h2>
       <table><thead><tr><th>When</th><th>Event</th><th>Field</th><th>Change</th></tr></thead><tbody>
-        {changes.map(change => <tr key={change.id}><td>{change.createdAt.toLocaleString()}</td><td>{change.event.name}</td><td>{change.field}</td><td><span className="muted">{String(change.oldValue ?? "—")}</span> → {String(change.newValue ?? "—")}</td></tr>)}
+        {changes.map(change => <tr key={change.id}><td>{change.createdAt.toLocaleString()}</td><td>{linkedEventTitle(change.event)}</td><td>{change.field}</td><td><span className="muted">{String(change.oldValue ?? "—")}</span> → {String(change.newValue ?? "—")}</td></tr>)}
       </tbody></table>
 
       <h2>Upcoming robot actions</h2>
       <table><thead><tr><th>When</th><th>Person</th><th>Event</th><th>Action</th><th>Status</th></tr></thead><tbody>
-        {actions.map(action => <tr key={action.id}><td>{action.scheduledFor.toLocaleString()}</td><td>{action.person?.displayName ?? "System"}</td><td>{action.event?.name ?? "—"}</td><td>{communicationChannelLabel(action.channel)} · {action.reason}</td><td><span className="pill">{action.status}</span></td></tr>)}
+        {actions.map(action => <tr key={action.id}><td>{action.scheduledFor.toLocaleString()}</td><td>{action.person?.displayName ?? "System"}</td><td>{action.event ? linkedEventTitle(action.event) : "—"}</td><td>{communicationChannelLabel(action.channel)} · {action.reason}</td><td><span className="pill">{action.status}</span></td></tr>)}
       </tbody></table>
     </>
   );

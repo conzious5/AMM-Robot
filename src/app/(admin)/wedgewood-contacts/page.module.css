@@ -1,0 +1,36 @@
+.directory {
+  display: grid;
+  gap: 12px;
+}
+
+.editor {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.editor label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.editor label input {
+  color: var(--ink);
+  font-weight: 400;
+  margin-top: 5px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 1000px) {
+  .editor { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 750px) {
+  .editor { grid-template-columns: 1fr; }
+}

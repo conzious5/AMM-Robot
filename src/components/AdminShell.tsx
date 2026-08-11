@@ -2,8 +2,8 @@ import Link from "next/link";
 import type { Administrator } from "@prisma/client";
 import { env } from "@/lib/env";
 import type { CommunicationServiceStatus } from "@/services/service-control";
-const administratorLinks = [["/","Dashboard"],["/operations","Operations"],["/events","Events"],["/people","People"],["/confirmations","Confirmations"],["/actions","Planned Actions"],["/conversations","Conversations"],["/logs","Logs"],["/guide","Guide"],["/settings","Settings"]];
-const projectManagerLinks = [["/","Dashboard"],["/operations","Operations"],["/events","Events"],["/people","People"],["/confirmations","Confirmations"],["/actions","Planned Actions"],["/conversations","Conversations"],["/guide","How to Use"],["/settings","My Settings"]];
+const administratorLinks = [["/","Dashboard"],["/operations","Operations"],["/events","Events"],["/people","People"],["/wedgewood-contacts","Wedgewood Contacts"],["/confirmations","Confirmations"],["/actions","Planned Actions"],["/conversations","Conversations"],["/logs","Logs"],["/guide","Guide"],["/settings","Settings"]];
+const projectManagerLinks = [["/","Dashboard"],["/operations","Operations"],["/events","Events"],["/people","People"],["/wedgewood-contacts","Wedgewood Contacts"],["/confirmations","Confirmations"],["/actions","Planned Actions"],["/conversations","Conversations"],["/guide","How to Use"],["/settings","My Settings"]];
 export function AdminShell({
   children,
   admin,

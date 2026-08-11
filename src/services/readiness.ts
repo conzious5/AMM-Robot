@@ -25,6 +25,11 @@ export type ReadinessInput = {
   completedReminderCount: number;
 };
 
+// Calendar timing edits still trigger reminder re-planning in the sync service,
+// but do not require a contractor to reconfirm the assignment.
+export const isMaterialPostConfirmationChange = (field: string) =>
+  ["venueName", "address", "assignment", "status"].includes(field);
+
 export function evaluateReadiness(input: ReadinessInput): { status: EventReadinessStatus; reasons: string[] } {
   if (input.canceled) return { status: "CANCELLED", reasons: ["Event is cancelled"] };
   const reasons: string[] = [];
@@ -89,7 +94,7 @@ export async function calculateEventReadiness(eventId: string, now = new Date())
   const confirmedTimes = event.assignments.map(item => item.confirmedAt).filter((value): value is Date => Boolean(value));
   const firstConfirmation = confirmedTimes.length ? new Date(Math.min(...confirmedTimes.map(value => value.getTime()))) : null;
   const materialChangeAfterConfirmation = Boolean(firstConfirmation && event.changeHistory.some(change =>
-    ["startsAt", "endsAt", "venueName", "address", "assignment", "status"].includes(change.field) && change.createdAt > firstConfirmation
+    isMaterialPostConfirmationChange(change.field) && change.createdAt > firstConfirmation
   ));
   const criticalOverdueTasks = event.operationalTasks
     .filter(task => task.criticalForReadiness && task.status === "OVERDUE")

@@ -26,7 +26,13 @@ export default async function Page() {
           <li>Resolve scheduling conflicts, declines, missing roles, and incorrect contact information first.</li>
           <li>Make sure every assigned photographer and videographer confirms independently, including second shooters.</li>
           <li>Use “Ask the operations agent” for readiness, unconfirmed assignments, missing roles, delivery failures, recent changes, and upcoming reminders.</li>
+          <li>Calendar time edits automatically re-plan reminder timing; they do not create a critical reconfirmation alert.</li>
         </ul>
+      </section>
+
+      <section className="card">
+        <h2>Wedgewood contacts</h2>
+        <p>Use <Link href="/wedgewood-contacts"><b>Wedgewood Contacts</b></Link> for venue and team email addresses. VSCO address-book matches are imported automatically, multiple contacts can be kept for each venue, and edits or removals are preserved on future syncs.</p>
       </section>
 
       <section className="card">

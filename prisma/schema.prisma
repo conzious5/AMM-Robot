@@ -229,6 +229,25 @@ model Event {
   updatedAt          DateTime        @updatedAt
 }
 
+model WedgewoodContact {
+  id                 String   @id @default(cuid())
+  sourceKey          String?  @unique
+  venueName          String
+  contactName        String?
+  teamOrRole         String?
+  email              String
+  active             Boolean  @default(true)
+  source             String   @default("MANUAL")
+  manuallyEdited     Boolean  @default(false)
+  rawProviderPayload Json?
+  lastSyncedAt       DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([active, venueName])
+  @@index([email])
+}
+
 model EventChange {
   id        String   @id @default(cuid())
   eventId   String
