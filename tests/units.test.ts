@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 process.env.DATABASE_URL ||= "postgresql://test:test@localhost:5432/test";
 import { isProductionAssignment, isTimelineFile, isWedgewoodContact, normalizeVscoEvent, vscoJobPresentation } from "@/providers/vsco";
-import { deterministicIntent, isFinancialQuestion, requestedEventDate, selectRequestedAssignment, standardPayReply } from "@/services/inbound";
+import { deterministicIntent, explicitlyInvokesRobot, inboundAutomationText, isFinancialQuestion, requestedEventDate, selectRequestedAssignment, standardPayReply } from "@/services/inbound";
 import { nextAllowedTime, outsideQuietHours } from "@/lib/quiet-hours";
 import { createOpaqueToken, sha256, verifyHmac, verifyQuoWebhook } from "@/lib/crypto";
 import { createHmac } from "node:crypto";
 import { reminderStepIsSatisfied } from "@/lib/reminders";
 import { plainStatus } from "@/services/operation-status";
-import { brandedEmailHtml } from "@/services/messaging";
+import { brandedEmailHtml, withAmmRobotSignoff } from "@/services/messaging";
+import { humanConversationOwnsReply, quoOutboundWasHuman } from "@/services/quo-context";
 import { isActiveInboundContractor } from "@/lib/inbound-identity";
 import { renderGroundedScheduleReply, safeScheduleRange } from "@/services/agent";
 import { readLimitedText, RequestBodyTooLargeError } from "@/lib/http-security";
@@ -47,6 +48,52 @@ describe("Quo inbound webhook parsing", () => {
 });
 describe("booked gig detection",()=>{it.each(["Photographer","Lead Photographer","Videographer","Video"])("%s is production",role=>expect(isProductionAssignment({role,teamMember:{firstName:"A",lastName:"B"}})).toBe(true));it.each(["Sales","Planner","Partner 1 Prep","Client"])("%s is not production",role=>expect(isProductionAssignment({role,teamMember:{firstName:"A",lastName:"B"}})).toBe(false))});
 describe("deterministic inbound",()=>{it.each([["CONFIRM","CONFIRM"],["yes!","CONFIRM"],["decline","DECLINE"],["STOP","STOP"],["MENU","HELP"],["show my assignment details","DETAILS"],["send the timeline","TIMELINE"],["job day sheet","TIMELINE"],["what ceremonies are upcoming?","SCHEDULE"],["where is my venue?","LOCATION"],["what time does it start?","HOURS"],["What is my rate?","PAY"],["PAY","PAY"],["show my invoice","FINANCIAL"],["What is next?","NATURAL_LANGUAGE"]])("%s", (text,intent)=>expect(deterministicIntent(text)).toBe(intent));it("blocks nonstandard financial questions",()=>{expect(isFinancialQuestion("When do I get paid?")).toBe(true);expect(isFinancialQuestion("Where is my ceremony?")).toBe(false)});it("calculates mileage from total trip miles",()=>{expect(standardPayReply("What is travel pay for 400 miles?")).toContain("$190.40");expect(standardPayReply("100 miles")).toContain("$0.00")})});
+describe("shared Quo line automation boundary", () => {
+  it.each([
+    "Hey Chris, can you upload that file?",
+    "I am unavailable this afternoon",
+    "Where did you leave the camera?",
+    "Details about the invoice we discussed",
+    "CONFIRM 8/29",
+  ])("leaves ordinary company text for a person: %s", text => {
+    expect(inboundAutomationText(text)).toBeNull();
+  });
+
+  it.each([
+    ["STOP", "STOP"],
+    ["HELP?", "HELP"],
+    ["DETAILS 8/29", "DETAILS 8/29"],
+    ["TIMELINE August 29", "TIMELINE August 29"],
+    ["ROBOT: what time is the August 29 wedding?", "what time is the August 29 wedding?"],
+    ["AMM ROBOT, show my upcoming ceremonies", "show my upcoming ceremonies"],
+  ])("recognizes an explicit robot request: %s", (text, expected) => {
+    expect(inboundAutomationText(text)).toBe(expected);
+  });
+});
+describe("shared Quo conversation context", () => {
+  it("leaves a command-like reply with the person who sent the last outbound text", () => {
+    expect(humanConversationOwnsReply({ automationText: "CONFIRM", explicitlyInvokedRobot: false, lastOutboundWasHuman: true })).toBe(true);
+  });
+  it("allows STOP and START regardless of human conversation context", () => {
+    expect(humanConversationOwnsReply({ automationText: "STOP", explicitlyInvokedRobot: false, lastOutboundWasHuman: true })).toBe(false);
+    expect(humanConversationOwnsReply({ automationText: "START", explicitlyInvokedRobot: false, lastOutboundWasHuman: true })).toBe(false);
+  });
+  it("allows an explicit ROBOT request to hand the conversation to automation", () => {
+    expect(explicitlyInvokesRobot("ROBOT: details for August 29")).toBe(true);
+    expect(humanConversationOwnsReply({ automationText: "details for August 29", explicitlyInvokedRobot: true, lastOutboundWasHuman: true })).toBe(false);
+  });
+  it("recognizes tracked robot messages and signed robot messages during webhook races", () => {
+    expect(quoOutboundWasHuman("REMINDER_SYSTEM", "Please confirm")).toBe(false);
+    expect(quoOutboundWasHuman(null, "Here are your details.\n\nSent by AMM Robot")).toBe(false);
+    expect(quoOutboundWasHuman(null, "Can you confirm you received this?")).toBe(true);
+  });
+});
+describe("AMM Robot signoff", () => {
+  it("adds the signoff exactly once", () => {
+    expect(withAmmRobotSignoff("Here are your details.")).toBe("Here are your details.\n\nSent by AMM Robot");
+    expect(withAmmRobotSignoff("Here are your details.\n\nSent by AMM Robot")).toBe("Here are your details.\n\nSent by AMM Robot");
+  });
+});
 describe("date-specific inbound assignment selection", () => {
   const assignments = [
     { id: "aug-14", event: { startsAt: new Date("2026-08-14T21:30:00.000Z"), timezone: "America/Denver" } },

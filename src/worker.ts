@@ -4,7 +4,7 @@ import { connection } from "@/lib/queue";
 import { sendPlannedAction } from "@/services/messaging";
 import { log } from "@/lib/log";
 import { db } from "@/lib/db";
-import { handleDeterministic, deterministicIntent } from "@/services/inbound";
+import { explicitlyInvokesRobot, handleDeterministic, deterministicIntent, inboundAutomationText } from "@/services/inbound";
 import { answerScheduleQuestion } from "@/services/agent";
 import { parsePhoneNumber } from "libphonenumber-js";
 import { notifyProjectManagers } from "@/services/project-manager";
@@ -12,6 +12,7 @@ import { notifySystemDeveloper } from "@/services/developer-alerts";
 import { env } from "@/lib/env";
 import { isActiveInboundContractor } from "@/lib/inbound-identity";
 import { parseQuoInboundMessage } from "@/lib/quo-webhook";
+import { humanConversationOwnsReply, lastQuoOutboundWasHuman } from "@/services/quo-context";
 
 const worker = new Worker("planned-actions", async job => sendPlannedAction(job.data.actionId as string), { connection, concurrency: 10 });
 
@@ -110,9 +111,34 @@ const webhookWorker = new Worker("webhooks", async job => {
       }
       const conversation = await db.conversation.upsert({ where: { personId_channel: { personId: person.id, channel: "SMS" } }, update: { lastMessageAt: new Date() }, create: { personId: person.id, channel: "SMS" } });
       await db.message.upsert({ where: { providerMessageId: inbound.id }, update: {}, create: { conversationId: conversation.id, personId: person.id, direction: "INBOUND", channel: "SMS", provider: "QUO", providerMessageId: inbound.id, sender: phone, recipient: inbound.recipient, textContent: inbound.text, deliveryStatus: "RECEIVED", authorType: "CONTRACTOR", receivedAt: new Date(), rawProviderPayload: inbound.raw as Prisma.InputJsonValue } });
-      const intent = deterministicIntent(inbound.text);
-      const deterministic = (testAlias && dryRunTestReply(intent)) || await handleDeterministic(person.id, inbound.text, "SMS");
-      if (!testAlias && /\b(conflict|double.booked|cannot work|can't work|unavailable)\b/i.test(inbound.text)) {
+      const automationText = inboundAutomationText(inbound.text);
+      const lastOutboundWasHuman = await lastQuoOutboundWasHuman(person.id, phone);
+      if (humanConversationOwnsReply({
+        automationText,
+        explicitlyInvokedRobot: explicitlyInvokesRobot(inbound.text),
+        lastOutboundWasHuman,
+      })) {
+        await Promise.all([
+          db.conversation.update({
+            where: { id: conversation.id },
+            data: {
+              needsAttention: true,
+              agentSummary: lastOutboundWasHuman
+                ? "This reply belongs to a recent human conversation in Quo. AMM Robot stayed silent."
+                : "A new text is waiting for a person to review in Quo.",
+            },
+          }),
+          db.webhookEvent.update({
+            where: { id: event.id },
+            data: { status: "COMPLETED", processedAt: new Date() },
+          }),
+        ]);
+        return;
+      }
+      if (!automationText) return;
+      const intent = deterministicIntent(automationText);
+      const deterministic = (testAlias && dryRunTestReply(intent)) || await handleDeterministic(person.id, automationText, "SMS");
+      if (!testAlias && intent === "DECLINE") {
         const key = `scheduling-conflict:${event.providerEventId}`;
         const conflictAlert = await db.operationalAlert.upsert({
           where: { deduplicationKey: key },
@@ -134,7 +160,7 @@ const webhookWorker = new Worker("webhooks", async job => {
           deduplicationKey: `alert:${conflictAlert.id}:${conflictAlert.firstSeenAt.toISOString()}`,
         });
       }
-      const reply = deterministic ?? await answerScheduleQuestion(person.id, inbound.text);
+      const reply = deterministic ?? await answerScheduleQuestion(person.id, automationText);
       const action = await db.plannedAction.upsert({
         where: { idempotencyKey: `reply:quo:${event.providerEventId}` },
         update: {},

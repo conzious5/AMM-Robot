@@ -9,6 +9,11 @@ import { localDayBounds, nextUnoccupiedLocalDay } from "@/lib/quiet-hours";
 import { addMinutes } from "date-fns";
 
 const logoUrl = "https://authentic-moments.com/wp-content/uploads/2023/12/Authentic-Moments-Website-Logo-v3.png";
+export const AMM_ROBOT_SIGNOFF = "Sent by AMM Robot";
+
+export function withAmmRobotSignoff(body: string) {
+  return body.includes(AMM_ROBOT_SIGNOFF) ? body : `${body}\n\n${AMM_ROBOT_SIGNOFF}`;
+}
 
 export async function sendPlannedAction(actionId: string) {
   const result = await db.$transaction(async tx => {
@@ -89,6 +94,9 @@ export async function sendPlannedAction(actionId: string) {
       : null;
     const url = token ? `${config.APP_URL}/confirm/${token}` : "";
     let body = action.messagePreview.replace("[secure confirmation link]", url);
+    if (action.channel === "SMS" && action.type === "AGENT_REPLY") {
+      body = withAmmRobotSignoff(body);
+    }
     const optOutAcknowledgment = action.type === "AGENT_REPLY" && /^You have been opted out\b/i.test(body);
     if (action.channel === "SMS" && action.type === "REMINDER" && assignment) {
       const menuAlreadySent = await tx.message.findFirst({
@@ -143,7 +151,12 @@ export async function sendPlannedAction(actionId: string) {
       if (!providerId) throw new Error("Quo response did not include a message ID");
     } else throw new Error("Unsupported channel");
     const sentAt = new Date();
-    await tx.message.create({ data: { conversationId: conversation.id, personId: person.id, eventId: assignment?.eventId, assignmentId: assignment?.id, direction: "OUTBOUND", channel: action.channel, provider: action.channel === "EMAIL" ? "RESEND" : "QUO", providerMessageId: providerId, sender: action.channel === "EMAIL" ? config.EMAIL_FROM : config.QUO_PHONE_NUMBER ?? "", recipient, subject: action.subjectPreview, textContent: body, deliveryStatus: "ACCEPTED", authorType: action.type === "AGENT_REPLY" ? "SCHEDULING_AGENT" : "REMINDER_SYSTEM", idempotencyKey: action.idempotencyKey, sentAt } });
+    const authorType = action.type === "AGENT_REPLY"
+      ? "SCHEDULING_AGENT"
+      : action.type === "MANUAL_MESSAGE"
+        ? "HUMAN_OPERATOR"
+        : "REMINDER_SYSTEM";
+    await tx.message.create({ data: { conversationId: conversation.id, personId: person.id, eventId: assignment?.eventId, assignmentId: assignment?.id, direction: "OUTBOUND", channel: action.channel, provider: action.channel === "EMAIL" ? "RESEND" : "QUO", providerMessageId: providerId, sender: action.channel === "EMAIL" ? config.EMAIL_FROM : config.QUO_PHONE_NUMBER ?? "", recipient, subject: action.subjectPreview, textContent: body, deliveryStatus: "ACCEPTED", authorType, idempotencyKey: action.idempotencyKey, sentAt } });
     if (assignment && ["REMINDER", "ESCALATE"].includes(action.type)) {
       await tx.assignment.update({
         where: { id: assignment.id },

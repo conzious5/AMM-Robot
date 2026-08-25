@@ -86,7 +86,7 @@ export function selectRequestedAssignment<T extends AssignmentWithEventDate>(
   }) ?? null;
 }
 
-export const helpMenu = "Authentic Moments contractor help:\nCONFIRM — confirm your next assignment\nSCHEDULE — upcoming ceremony dates\nDETAILS — role, date, venue, times, and timeline link\nTIMELINE — latest timeline or day sheet\nLOCATION — venue and address\nHOURS — available start/end times\nPAY — standard rates and mileage policy\nHELP — show this menu\nYou can also ask a question in your own words. Reply STOP to opt out.";
+export const helpMenu = "Authentic Moments contractor help:\nCONFIRM — confirm your next assignment\nSCHEDULE — upcoming ceremony dates\nDETAILS — role, date, venue, times, and timeline link\nTIMELINE — latest timeline or day sheet\nLOCATION — venue and address\nHOURS — available start/end times\nPAY — standard rates and mileage policy\nHELP — show this menu\nFor a free-form scheduling question, begin the message with ROBOT:. Other messages are left for a person to answer. Reply STOP to opt out.";
 export const isFinancialQuestion = (text: string) => financialWords.test(text);
 export const isStandardPayQuestion = (text: string) => standardPayWords.test(text);
 export const standardPayReply = (text = "") => {
@@ -113,6 +113,35 @@ export const deterministicIntent = (text: string): Intent => {
   if (declineWords.test(value)) return "DECLINE";
   return "NATURAL_LANGUAGE";
 };
+
+const robotCommand = /^(STOP|START|CONFIRM|DECLINE|HELP|MENU|OPTIONS|SCHEDULE|DETAILS|TIMELINE|LOCATION|HOURS|PAY)\b(.*)$/i;
+const robotInvocation = /^(?:(?:AMM|AUTHENTIC MOMENTS)\s+)?ROBOT\b[\s:,-]*(.*)$/i;
+
+export function explicitlyInvokesRobot(text: string) {
+  return robotInvocation.test(text.trim());
+}
+
+/**
+ * The Quo number is also a normal company phone line. Only published commands
+ * (optionally followed by an event date) or an explicit ROBOT: invocation are
+ * automation requests. Everything else must remain a human conversation.
+ */
+export function inboundAutomationText(text: string) {
+  const value = text.trim();
+  const invoked = value.match(robotInvocation);
+  if (invoked) return invoked[1]?.trim() || "HELP";
+
+  const command = value.match(robotCommand);
+  if (!command) return null;
+  const tail = command[2]?.replace(/^[\s:,-]+/, "").replace(/[?!.]+$/, "").trim() ?? "";
+  if (!tail) return command[1]!.toUpperCase();
+
+  // A date is the only unprefixed context accepted after a command. This
+  // supports messages such as "DETAILS 8/29" without treating ordinary texts
+  // that happen to begin with a command-like word as robot requests.
+  const dateAwareCommands = new Set(["DETAILS", "TIMELINE", "LOCATION", "HOURS"]);
+  return dateAwareCommands.has(command[1]!.toUpperCase()) && requestedEventDate(tail) ? value : null;
+}
 export async function handleDeterministic(personId: string, text: string, channel: "EMAIL" | "SMS") {
   const intent = deterministicIntent(text);
   if (intent === "STOP") { await db.person.update({ where: { id: personId }, data: { smsEligible: false } }); return "You have been opted out of Authentic Moments text messages. Reply START to opt back in."; }
