@@ -7,6 +7,7 @@ import { helpMenu } from "@/services/inbound";
 import { resolveCommunicationServiceStatus } from "@/services/service-control";
 import { localDayBounds, nextUnoccupiedLocalDay } from "@/lib/quiet-hours";
 import { addMinutes } from "date-fns";
+import { eventTitleDateMismatch } from "@/lib/event-date-consistency";
 
 const logoUrl = "https://authentic-moments.com/wp-content/uploads/2023/12/Authentic-Moments-Website-Logo-v3.png";
 export const AMM_ROBOT_SIGNOFF = "Sent by AMM Robot";
@@ -24,6 +25,12 @@ export async function sendPlannedAction(actionId: string) {
     const now = new Date();
     if (!person || !person.active || (assignment && (!assignment.active || assignment.event.canceled || assignment.event.startsAt <= now || assignment.confirmationStatus === "CONFIRMED"))) {
       return tx.plannedAction.update({ where: { id: action.id }, data: { status: "SUPPRESSED", lastError: "Recipient or assignment is ineligible" } });
+    }
+    if (assignment && eventTitleDateMismatch(assignment.event.name, assignment.event.startsAt, assignment.event.timezone)) {
+      return tx.plannedAction.update({
+        where: { id: action.id },
+        data: { status: "CANCELED", jobQueueId: null, canceledAt: now, lastError: "Blocked: VSCO job title date conflicts with the ceremony calendar date" },
+      });
     }
     const config = env();
     if (!config.TEST_MODE) {

@@ -14,6 +14,7 @@ import { renderGroundedScheduleReply, safeScheduleRange } from "@/services/agent
 import { readLimitedText, RequestBodyTooLargeError } from "@/lib/http-security";
 import { recentOperationsAgentResult } from "@/lib/operations-agent-result";
 import { parseQuoInboundMessage } from "@/lib/quo-webhook";
+import { eventTitleDate, eventTitleDateMismatch, eventWasMissingFromSuccessfulVscoScan } from "@/lib/event-date-consistency";
 
 describe("VSCO normalization",()=>{it("preserves offset and assignments",()=>{const x=normalizeVscoEvent({id:12,name:"Wedding",start:"2026-08-12T15:00:00-06:00",timezone:"America/Denver",venue:{name:"Manor"},assignments:[{id:4,role:"Videographer",teamMember:{id:8,firstName:"A",lastName:"B",email:"a@example.com"}}]});expect(x.externalId).toBe("12");expect(x.startsAt.toISOString()).toBe("2026-08-12T21:00:00.000Z");expect(x.assignments?.[0].teamMember.id).toBe("8")});it("reports missing assignments as null",()=>expect(normalizeVscoEvent({id:"1",name:"W",start:"2026-08-12T15:00:00Z"}).assignments).toBeNull())});
 describe("VSCO project presentation", () => {
@@ -26,6 +27,27 @@ describe("VSCO project presentation", () => {
       title: "Taylor Smith and Morgan Lee's Photography on Saturday, September 19th, 2026",
       administrativeUrl: "https://workspace.vsco.co/jobs/view/123456",
     });
+  });
+});
+describe("VSCO event date safety", () => {
+  it("detects a job-title date that conflicts with the ceremony calendar", () => {
+    const name = "John Pham and Jordan Super-Hill's Wedgewood Video & Photo on Saturday, September 19th, 2026";
+    expect(eventTitleDate(name)).toEqual({ month: 9, day: 19, year: 2026 });
+    expect(eventTitleDateMismatch(name, new Date("2026-09-12T19:00:00.000Z"), "America/Denver")).toBe(true);
+    expect(eventTitleDateMismatch(name, new Date("2026-09-19T19:00:00.000Z"), "America/Denver")).toBe(false);
+  });
+
+  it("does not block ordinary titles that contain no explicit date", () => {
+    expect(eventTitleDateMismatch("Wedding Ceremony", new Date("2026-09-12T19:00:00.000Z"), "America/Denver")).toBe(false);
+  });
+
+  it("archives only unseen VSCO events inside a completed scan window", () => {
+    const from = new Date("2026-08-01T00:00:00.000Z");
+    const to = new Date("2027-08-01T00:00:00.000Z");
+    const event = { vscoEventId: "event-1", startsAt: new Date("2026-09-12T19:00:00.000Z"), canceled: false };
+    expect(eventWasMissingFromSuccessfulVscoScan(event, new Set(), from, to)).toBe(true);
+    expect(eventWasMissingFromSuccessfulVscoScan(event, new Set(["event-1"]), from, to)).toBe(false);
+    expect(eventWasMissingFromSuccessfulVscoScan({ ...event, canceled: true }, new Set(), from, to)).toBe(false);
   });
 });
 describe("Wedgewood directory detection", () => {

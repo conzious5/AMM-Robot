@@ -7,6 +7,7 @@ import { planAssignmentReminders } from "@/lib/reminders";
 import { VscoWorkspaceProvider, type VscoWedgewoodContact } from "@/providers/vsco";
 import { notifyProjectManagers } from "@/services/project-manager";
 import { notifySystemDeveloper } from "@/services/developer-alerts";
+import { eventTitleDateMismatch, eventWasMissingFromSuccessfulVscoScan } from "@/lib/event-date-consistency";
 
 const assignmentRole = (role: string) => role.toLowerCase().includes("video") ? "VIDEOGRAPHER" as const : role.toLowerCase().includes("photo") ? "PHOTOGRAPHER" as const : "OTHER" as const;
 const removedPersonNames = new Set(["danielle tolson", "seth smith"]);
@@ -16,13 +17,18 @@ const normalizedName = (value: string) => value.trim().replace(/\s+/g, " ").toLo
 
 export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
   const run = await db.syncRun.create({ data: { provider: "VSCO", status: "RUNNING" } });
+  const syncFrom = addDays(run.startedAt, -env().VSCO_SYNC_HISTORY_DAYS);
+  const syncTo = addDays(run.startedAt, env().VSCO_SYNC_FUTURE_DAYS);
+  const seenExternalIds = new Set<string>();
   const stats = { fetched: 0, created: 0, updated: 0, skipped: 0, failed: 0, warnings: [] as string[] };
   try {
     await applyPersonnelOverrides();
-    for await (const page of provider.events({ from: addDays(new Date(), -env().VSCO_SYNC_HISTORY_DAYS), to: addDays(new Date(), env().VSCO_SYNC_FUTURE_DAYS) })) {
+    for await (const page of provider.events({ from: syncFrom, to: syncTo })) {
       for (const item of page.events) {
+        seenExternalIds.add(item.externalId);
         stats.fetched++;
         try {
+          const dateMismatch = eventTitleDateMismatch(item.name, item.startsAt, item.timezone);
           const existing = await db.event.findUnique({ where: { vscoEventId: item.externalId }, include: { assignments: true } });
           const event = await db.event.upsert({
             where: { vscoEventId: item.externalId },
@@ -106,7 +112,7 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
                 },
               });
             }
-            await planAssignmentReminders(assignment.id);
+            if (!dateMismatch) await planAssignmentReminders(assignment.id);
           }
           for (const old of existing?.assignments ?? []) if (old.source === "VSCO" && old.active && !seen.has(old.id)) {
             await db.assignment.update({ where: { id: old.id }, data: { active: false, needsAttention: true } });
@@ -121,16 +127,55 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
               },
             });
           }
+          if (dateMismatch) {
+            const reason = `VSCO job title date conflicts with its ceremony calendar date for ${event.name}`;
+            stats.warnings.push(reason);
+            await db.$transaction([
+              db.plannedAction.updateMany({
+                where: { eventId: event.id, status: { in: ["PLANNED", "QUEUED", "PROCESSING", "FAILED", "WAITING_FOR_APPROVAL"] } },
+                data: { status: "CANCELED", jobQueueId: null, canceledAt: new Date(), lastError: "Blocked: VSCO job title date conflicts with the ceremony calendar date" },
+              }),
+              db.assignment.updateMany({ where: { eventId: event.id, active: true }, data: { nextReminderAt: null, needsAttention: true } }),
+              db.operationalAlert.upsert({
+                where: { deduplicationKey: `vsco-date-mismatch:${event.id}` },
+                update: { status: "OPEN", resolvedAt: null, lastSeenAt: new Date(), reason },
+                create: {
+                  eventId: event.id,
+                  type: "VSCO_DATE_MISMATCH",
+                  severity: "CRITICAL",
+                  reason,
+                  recommendedAction: "Correct the wedding date in VSCO before contacting contractors.",
+                  deduplicationKey: `vsco-date-mismatch:${event.id}`,
+                },
+              }),
+            ]);
+          } else {
+            await db.operationalAlert.updateMany({
+              where: { deduplicationKey: `vsco-date-mismatch:${event.id}`, status: "OPEN" },
+              data: { status: "RESOLVED", resolvedAt: new Date() },
+            });
+          }
         } catch (error) { stats.failed++; stats.warnings.push(error instanceof Error ? error.message : "Unknown sync error"); }
       }
       await db.syncRun.update({ where: { id: run.id }, data: { cursor: page.cursor } });
     }
+    if (stats.failed === 0) await archiveMissingVscoEvents(seenExternalIds, syncFrom, syncTo);
     await archiveExcludedAndDuplicateEvents();
     await syncWedgewoodDirectory(await provider.wedgewoodDirectoryContacts());
     return await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: stats.failed ? "PARTIAL" : "SUCCEEDED", itemsFetched: stats.fetched, itemsCreated: stats.created, itemsUpdated: stats.updated, itemsSkipped: stats.skipped, itemsFailed: stats.failed, details: stats } });
   } catch (error) {
     await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: "FAILED", errorSummary: error instanceof Error ? error.message : "Unknown error", details: stats } });
     throw error;
+  }
+}
+
+async function archiveMissingVscoEvents(seenExternalIds: ReadonlySet<string>, from: Date, to: Date) {
+  const candidates = await db.event.findMany({
+    where: { vscoEventId: { not: null }, canceled: false, startsAt: { gte: from, lte: to } },
+    select: { id: true, vscoEventId: true, startsAt: true, canceled: true },
+  });
+  for (const event of candidates) {
+    if (eventWasMissingFromSuccessfulVscoScan(event, seenExternalIds, from, to)) await archiveEvent(event.id);
   }
 }
 
