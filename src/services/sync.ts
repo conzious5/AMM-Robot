@@ -136,18 +136,23 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
                 data: { status: "CANCELED", jobQueueId: null, canceledAt: new Date(), lastError: "Blocked: VSCO job title date conflicts with the ceremony calendar date" },
               }),
               db.assignment.updateMany({ where: { eventId: event.id, active: true }, data: { nextReminderAt: null, needsAttention: true } }),
-              db.operationalAlert.upsert({
-                where: { deduplicationKey: `vsco-date-mismatch:${event.id}` },
-                update: { status: "OPEN", resolvedAt: null, lastSeenAt: new Date(), reason },
-                create: {
-                  eventId: event.id,
-                  type: "VSCO_DATE_MISMATCH",
-                  severity: "CRITICAL",
-                  reason,
-                  recommendedAction: "Correct the wedding date in VSCO before contacting contractors.",
-                  deduplicationKey: `vsco-date-mismatch:${event.id}`,
-                },
-              }),
+              event.startsAt > run.startedAt
+                ? db.operationalAlert.upsert({
+                    where: { deduplicationKey: `vsco-date-mismatch:${event.id}` },
+                    update: { status: "OPEN", resolvedAt: null, lastSeenAt: new Date(), reason },
+                    create: {
+                      eventId: event.id,
+                      type: "VSCO_DATE_MISMATCH",
+                      severity: "CRITICAL",
+                      reason,
+                      recommendedAction: "Correct the wedding date in VSCO before contacting contractors.",
+                      deduplicationKey: `vsco-date-mismatch:${event.id}`,
+                    },
+                  })
+                : db.operationalAlert.updateMany({
+                    where: { deduplicationKey: `vsco-date-mismatch:${event.id}`, status: "OPEN" },
+                    data: { status: "RESOLVED", resolvedAt: new Date() },
+                  }),
             ]);
           } else {
             await db.operationalAlert.updateMany({
