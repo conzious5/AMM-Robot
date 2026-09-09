@@ -6,6 +6,7 @@ import { requireAdmin } from "@/lib/auth";
 import { communicationChannelLabel } from "@/lib/channels";
 import { launchIncludedEventWhere } from "@/lib/launch-cutoff";
 import { recentOperationsAgentResult } from "@/lib/operations-agent-result";
+import { ResendReminderForm, type ResendReminderState } from "@/components/ResendReminderForm";
 import { db } from "@/lib/db";
 import {
   addOperationalNote,
@@ -73,6 +74,18 @@ async function operate(data: FormData) {
     await setOperationalTaskCompleted(admin.id, String(data.get("taskId")), op === "task-complete", nonce);
   }
   revalidatePath("/operations");
+}
+
+async function resendReminder(_: ResendReminderState, data: FormData): Promise<ResendReminderState> {
+  "use server";
+  try {
+    const admin = await requireAdmin();
+    const action = await resendAssignmentReminder(admin.id, String(data.get("assignmentId")), String(data.get("nonce") || randomUUID()));
+    revalidatePath("/operations");
+    return { status: "success", message: `Queued by ${communicationChannelLabel(action.channel).toLowerCase()}.` };
+  } catch {
+    return { status: "error", message: "The reminder was not queued. Review the assignment and try again." };
+  }
 }
 
 async function ask(data: FormData) {
@@ -194,11 +207,13 @@ export default async function Page() {
               return <div className="alert-row" key={alert.id}>
                 <div><b>{alert.severity}</b> · {alert.reason}<br /><span className="muted">{alert.recommendedAction}</span></div>
                 <div className="action-controls">
-                  {resendTargets.map(assignment => <form action={operate} key={assignment.id}>
-                    <input type="hidden" name="nonce" value={`alert-resend:${alert.id}:${assignment.id}:${randomUUID()}`} />
-                    <input type="hidden" name="assignmentId" value={assignment.id} />
-                    <button name="op" value="resend">Resend to {assignment.person.firstName || assignment.person.displayName}</button>
-                  </form>)}
+                  {resendTargets.map(assignment => <ResendReminderForm
+                    action={resendReminder}
+                    assignmentId={assignment.id}
+                    nonce={`alert-resend:${alert.id}:${assignment.id}:${randomUUID()}`}
+                    label={`Resend to ${assignment.person.firstName || assignment.person.displayName}`}
+                    key={assignment.id}
+                  />)}
                   <form action={operate}>
                     <input type="hidden" name="nonce" value={`resolve:${alert.id}:${randomUUID()}`} />
                     <input type="hidden" name="alertId" value={alert.id} />
@@ -215,16 +230,22 @@ export default async function Page() {
                   <b>{assignment.person.displayName}</b> · {assignment.role.toLowerCase()} · <span className="pill">{assignment.confirmationStatus}</span>
                 </summary>
                 <div className="control-grid">
-                  <form action={operate} className="card">
-                    <input type="hidden" name="nonce" value={`status:${assignment.id}:${randomUUID()}`} />
-                    <input type="hidden" name="assignmentId" value={assignment.id} />
+                  <div className="card">
                     <b>Confirmation</b>
                     <div className="action-controls">
-                      <button name="op" value="confirm">Mark confirmed</button>
-                      <button className="secondary" name="op" value="decline">Mark declined</button>
-                      <button name="op" value="resend">Resend reminder</button>
+                      <form action={operate}>
+                        <input type="hidden" name="nonce" value={`status:${assignment.id}:${randomUUID()}`} />
+                        <input type="hidden" name="assignmentId" value={assignment.id} />
+                        <button name="op" value="confirm">Mark confirmed</button>
+                        <button className="secondary" name="op" value="decline">Mark declined</button>
+                      </form>
+                      <ResendReminderForm
+                        action={resendReminder}
+                        assignmentId={assignment.id}
+                        nonce={`resend:${assignment.id}:${randomUUID()}`}
+                      />
                     </div>
-                  </form>
+                  </div>
                   <form action={operate} className="card">
                     <input type="hidden" name="nonce" value={`contact:${assignment.id}:${randomUUID()}`} />
                     <input type="hidden" name="personId" value={assignment.personId} />
