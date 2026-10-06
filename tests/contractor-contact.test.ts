@@ -7,9 +7,11 @@ vi.mock("@/lib/reminders", () => ({ planAssignmentReminders: m.plan }));
 vi.mock("@/services/project-manager", () => ({ notifyProjectManagers: m.notify }));
 import { reconcileContractorSmsOptOut } from "@/services/contractor-contact";
 import { deterministicIntent, inboundAutomationText } from "@/services/inbound";
+import { humanConversationOwnsReply } from "@/services/quo-context";
 describe("contractor communication accountability", () => {
   it.each(["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"])("recognizes provider opt-out keyword %s", text => {
     expect(deterministicIntent(inboundAutomationText(text)!)).toBe("STOP");
+    expect(humanConversationOwnsReply({ automationText: inboundAutomationText(text), explicitlyInvokedRobot: false, lastOutboundWasHuman: true })).toBe(false);
   });
   beforeEach(() => { vi.resetAllMocks(); m.person.mockResolvedValue({ displayName: "Chris", smsEligible: false }); m.alert.mockResolvedValue({ firstSeenAt: new Date("2026-10-06T03:00:00Z") }); m.assignments.mockResolvedValue([{ id: "a" }]); });
   it("raises a critical issue and notifies the owner and project manager without changing bookings", async () => {

@@ -18,7 +18,7 @@ export function humanConversationOwnsReply(input: {
   lastOutboundWasHuman: boolean;
 }) {
   if (!input.automationText) return true;
-  if (/^(STOP|START)$/i.test(input.automationText)) return false;
+  if (/^(STOP|STOPALL|UNSUBSCRIBE|CANCEL|END|QUIT|START|UNSTOP)$/i.test(input.automationText)) return false;
   if (input.explicitlyInvokedRobot) return false;
   return input.lastOutboundWasHuman;
 }
