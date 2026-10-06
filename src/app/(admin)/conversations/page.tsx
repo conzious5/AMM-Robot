@@ -11,11 +11,13 @@ export default async function Page() {
     <>
       <h1>Conversations</h1>
       <DataTable
-        columns={["Person", "Communication", "Latest message", "Status", "Attention"]}
+        columns={["Person", "Communication", "Latest message", "Last message time", "SMS status", "Status", "Attention"]}
         rows={data.map(conversation => [
           conversation.person.displayName,
           communicationChannelLabel(conversation.channel),
           conversation.messages[0]?.textContent ?? "No messages",
+          conversation.messages[0]?.createdAt.toISOString() ?? "—",
+          conversation.person.smsEligible ? "Enabled" : <span className="danger" key="sms">SMS stopped · personal follow-up required</span>,
           conversation.status,
           conversation.needsAttention ? <span className="danger" key="attention">Needs attention</span> : "—",
         ])}

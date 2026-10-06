@@ -9,6 +9,7 @@ import { notifyProjectManagers } from "@/services/project-manager";
 import { notifySystemDeveloper } from "@/services/developer-alerts";
 import { eventTitleDateMismatch, eventWasMissingFromSuccessfulVscoScan } from "@/lib/event-date-consistency";
 import { recoverBookedWeddingReminders } from "@/services/reminder-recovery";
+import { reconcileContractorSmsOptOut } from "@/services/contractor-contact";
 
 const assignmentRole = (role: string) => role.toLowerCase().includes("video") ? "VIDEOGRAPHER" as const : role.toLowerCase().includes("photo") ? "PHOTOGRAPHER" as const : "OTHER" as const;
 const removedPersonNames = new Set(["danielle tolson", "seth smith"]);
@@ -170,6 +171,8 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
     if (stats.failed === 0) await archiveMissingVscoEvents(seenExternalIds, syncFrom, syncTo);
     await archiveExcludedAndDuplicateEvents();
     if (stats.failed === 0) await recoverBookedWeddingReminders(seenExternalIds);
+    const optedOutContractors = await db.person.findMany({ where: { active: true, smsEligible: false, role: { in: ["PHOTOGRAPHER", "VIDEOGRAPHER", "BOTH"] } }, select: { id: true } });
+    for (const person of optedOutContractors) await reconcileContractorSmsOptOut(person.id);
     await syncWedgewoodDirectory(await provider.wedgewoodDirectoryContacts());
     return await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: stats.failed ? "PARTIAL" : "SUCCEEDED", itemsFetched: stats.fetched, itemsCreated: stats.created, itemsUpdated: stats.updated, itemsSkipped: stats.skipped, itemsFailed: stats.failed, details: stats } });
   } catch (error) {

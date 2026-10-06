@@ -5,6 +5,7 @@ import { reconcileEventReadiness } from "@/services/readiness";
 import { VscoWorkspaceProvider } from "@/providers/vsco";
 import { launchIncludedEventWhere } from "@/lib/launch-cutoff";
 import { formatInTimeZone } from "date-fns-tz";
+import { reconcileContractorSmsOptOut } from "@/services/contractor-contact";
 
 const confirmWords = /^(confirm|confirmed|yes|yep|i(?:'|’)ll be there)[.! ]*$/i;
 const declineWords = /^(decline|cannot work|can't work|no)[.! ]*$/i;
@@ -99,8 +100,8 @@ export const standardPayReply = (text = "") => {
 export type Intent = "CONFIRM" | "DECLINE" | "STOP" | "START" | "HELP" | "SCHEDULE" | "DETAILS" | "TIMELINE" | "LOCATION" | "HOURS" | "PAY" | "FINANCIAL" | "NATURAL_LANGUAGE";
 export const deterministicIntent = (text: string): Intent => {
   const value = text.trim();
-  if (/^stop$/i.test(value)) return "STOP";
-  if (/^start$/i.test(value)) return "START";
+  if (/^(stop|stopall|unsubscribe|cancel|end|quit)[.!]?$/i.test(value)) return "STOP";
+  if (/^(start|unstop)[.!]?$/i.test(value)) return "START";
   if (/^pay$/i.test(value) || isStandardPayQuestion(value)) return "PAY";
   if (isFinancialQuestion(value)) return "FINANCIAL";
   if (/^(help|menu|options)$/i.test(value)) return "HELP";
@@ -114,7 +115,7 @@ export const deterministicIntent = (text: string): Intent => {
   return "NATURAL_LANGUAGE";
 };
 
-const robotCommand = /^(STOP|START|CONFIRM|DECLINE|HELP|MENU|OPTIONS|SCHEDULE|DETAILS|TIMELINE|LOCATION|HOURS|PAY)\b(.*)$/i;
+const robotCommand = /^(STOPALL|STOP|UNSUBSCRIBE|CANCEL|END|QUIT|UNSTOP|START|CONFIRM|DECLINE|HELP|MENU|OPTIONS|SCHEDULE|DETAILS|TIMELINE|LOCATION|HOURS|PAY)\b(.*)$/i;
 const robotInvocation = /^(?:(?:AMM|AUTHENTIC MOMENTS)\s+)?ROBOT\b[\s:,-]*(.*)$/i;
 
 export function explicitlyInvokesRobot(text: string) {
@@ -144,8 +145,8 @@ export function inboundAutomationText(text: string) {
 }
 export async function handleDeterministic(personId: string, text: string, channel: "EMAIL" | "SMS") {
   const intent = deterministicIntent(text);
-  if (intent === "STOP") { await db.person.update({ where: { id: personId }, data: { smsEligible: false } }); return "You have been opted out of Authentic Moments text messages. Reply START to opt back in."; }
-  if (intent === "START") { await db.person.update({ where: { id: personId }, data: { smsEligible: true } }); return "You are opted back in to Authentic Moments scheduling messages."; }
+  if (intent === "STOP") { await db.person.update({ where: { id: personId }, data: { smsEligible: false } }); await reconcileContractorSmsOptOut(personId, true); return "You have been opted out of Authentic Moments text messages. Your booked assignments remain active. Please contact Authentic Moments personally to resolve scheduling communications. Reply START to resume texts."; }
+  if (intent === "START") { await db.person.update({ where: { id: personId }, data: { smsEligible: true } }); await reconcileContractorSmsOptOut(personId); return "You are opted back in to Authentic Moments scheduling messages."; }
   if (intent === "HELP") return helpMenu;
   if (intent === "PAY") return standardPayReply(text);
   if (intent === "FINANCIAL") return "For privacy and security, this number can only share Authentic Moments' published standard contractor rates and mileage policy. It cannot access individual payouts, invoices, client pricing, billing, taxes, or contract amounts. Reply PAY for the standard rate card.";

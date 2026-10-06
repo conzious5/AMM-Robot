@@ -5,6 +5,7 @@ import { env } from "@/lib/env";
 import { launchIncludedEventWhere } from "@/lib/launch-cutoff";
 
 type NotificationInput = {
+  includeAdministrators?: boolean;
   eventId?: string;
   type: string;
   subject: string;
@@ -26,7 +27,7 @@ export function groupEventsForBrief<T extends { readinessStatus: string }>(event
 
 export async function notifyProjectManagers(input: NotificationInput) {
   const managers = await db.administrator.findMany({
-    where: { active: true, role: "PROJECT_MANAGER" },
+    where: { active: true, role: input.includeAdministrators ? { in: ["PROJECT_MANAGER", "ADMIN"] } : "PROJECT_MANAGER" },
   });
   const results = [];
   for (const manager of managers) {

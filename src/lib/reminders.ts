@@ -114,6 +114,9 @@ export async function planAssignmentReminders(assignmentId: string, now = new Da
   when = nextUnoccupiedLocalDay(when, assignment.person.timezone, occupiedDateKeys);
 
   const preview = renderTemplate(nextPolicy.messageTemplate, assignment);
+  const channel = nextPolicy.channel === "SMS" && !assignment.person.smsEligible && assignment.person.emailEligible && assignment.person.email
+    ? "EMAIL" as const
+    : nextPolicy.channel;
   const subject = nextPolicy.subjectTemplate
     ? renderTemplate(nextPolicy.subjectTemplate, assignment)
     : null;
@@ -125,7 +128,7 @@ export async function planAssignmentReminders(assignmentId: string, now = new Da
       messagePreview: preview,
       subjectPreview: subject,
       reason: nextPolicy.name,
-      channel: nextPolicy.channel,
+      channel,
       ...(existing?.status === "CANCELED" || existing?.status === "SUPPRESSED"
         ? { status: "PLANNED" as const, canceledAt: null, jobQueueId: null, lastError: null }
         : {}),
@@ -135,7 +138,7 @@ export async function planAssignmentReminders(assignmentId: string, now = new Da
       eventId: assignment.eventId,
       assignmentId: assignment.id,
       personId: assignment.personId,
-      channel: nextPolicy.channel,
+      channel,
       scheduledFor: when,
       reason: nextPolicy.name,
       messagePreview: preview,

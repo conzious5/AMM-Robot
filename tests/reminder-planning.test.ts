@@ -11,7 +11,7 @@ describe("reminder replanning", () => {
     vi.resetAllMocks();
     m.assignment.mockResolvedValue({ id: "a", eventId: "e", personId: "p", active: true, paused: false, confirmationStatus: "PENDING", role: "VIDEOGRAPHER",
       event: { canceled: false, paused: false, startsAt: new Date("2026-10-11T22:00:00Z"), timezone: "America/Denver", name: "Wedding", venueName: "Venue", address: "Address" },
-      person: { active: true, paused: false, timezone: "America/Denver", firstName: "Chris" } });
+      person: { active: true, paused: false, smsEligible: true, emailEligible: true, email: "chris@example.com", timezone: "America/Denver", firstName: "Chris" } });
     m.policies.mockResolvedValue([{ id: "policy", name: "Four weeks", offsetMinutes: 40320, honorQuietHours: true, channel: "EMAIL", messageTemplate: "Hello {{firstName}}", subjectTemplate: null }]);
     m.actions.mockResolvedValueOnce([{ idempotencyKey: "reminder:a:policy", status: "SUPPRESSED", lastError: "Communications paused" }]).mockResolvedValue([]);
     m.upsert.mockResolvedValue({ id: "action" });
@@ -28,5 +28,14 @@ describe("reminder replanning", () => {
     await planAssignmentReminders("a");
     expect(m.upsert).not.toHaveBeenCalled();
     expect(m.update).toHaveBeenCalledWith({ where: { id: "a" }, data: { nextReminderAt: null } });
+  });
+  it("keeps reminder coverage by switching a blocked SMS step to eligible email", async () => {
+    const assignment = await m.assignment();
+    m.assignment.mockResolvedValue({ ...assignment, person: { ...assignment.person, smsEligible: false } });
+    const policies = await m.policies();
+    m.policies.mockResolvedValue([{ ...policies[0], channel: "SMS" }]);
+    await planAssignmentReminders("a", new Date("2026-10-06T03:00:00Z"));
+    expect(m.upsert.mock.calls[0][0].update.channel).toBe("EMAIL");
+    expect(m.upsert.mock.calls[0][0].create.channel).toBe("EMAIL");
   });
 });
