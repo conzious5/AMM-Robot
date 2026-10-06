@@ -291,7 +291,10 @@ export async function updatePersonContact(adminId: string, personId: string, inp
   const parsedPhone = phoneInput ? parsePhoneNumberFromString(phoneInput, "US") : undefined;
   if (phoneInput && (!parsedPhone || !parsedPhone.isValid())) throw new Error("Enter a valid phone number.");
   const phone = parsedPhone?.number ?? null;
-  const person = await db.person.update({ where: { id: personId }, data: { email, normalizedEmail: email, phone, emailEligible: Boolean(email), smsEligible: Boolean(phone) } });
+  // Saving contact details must not erase a contractor's STOP request.
+  // Missing numbers can become eligible when supplied; stopped numbers require START.
+  const smsEligible = Boolean(phone) && (before.smsEligible || !before.phone);
+  const person = await db.person.update({ where: { id: personId }, data: { email, normalizedEmail: email, phone, emailEligible: Boolean(email), smsEligible } });
   const change = contractorContactAuditValues(before, { email, phone });
   await audit(adminId, "PERSON_CONTACT_UPDATED", "Person", personId, change.before, change.after, idempotencyKey);
   return person;

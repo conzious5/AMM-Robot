@@ -171,7 +171,7 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
     if (stats.failed === 0) await archiveMissingVscoEvents(seenExternalIds, syncFrom, syncTo);
     await archiveExcludedAndDuplicateEvents();
     if (stats.failed === 0) await recoverBookedWeddingReminders(seenExternalIds);
-    const optedOutContractors = await db.person.findMany({ where: { active: true, smsEligible: false, role: { in: ["PHOTOGRAPHER", "VIDEOGRAPHER", "BOTH"] } }, select: { id: true } });
+    const optedOutContractors = await db.person.findMany({ where: { active: true, phone: { not: null }, smsEligible: false, role: { in: ["PHOTOGRAPHER", "VIDEOGRAPHER", "BOTH"] } }, select: { id: true } });
     for (const person of optedOutContractors) await reconcileContractorSmsOptOut(person.id);
     await syncWedgewoodDirectory(await provider.wedgewoodDirectoryContacts());
     return await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: stats.failed ? "PARTIAL" : "SUCCEEDED", itemsFetched: stats.fetched, itemsCreated: stats.created, itemsUpdated: stats.updated, itemsSkipped: stats.skipped, itemsFailed: stats.failed, details: stats } });
