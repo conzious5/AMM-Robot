@@ -23,7 +23,7 @@ export async function sendPlannedAction(actionId: string) {
     const assignment = action.assignment;
     const person = assignment?.person ?? action.person;
     const now = new Date();
-    if (!person || !person.active || (assignment && (!assignment.active || assignment.event.canceled || assignment.event.startsAt <= now || assignment.confirmationStatus === "CONFIRMED"))) {
+    if (!person || !person.active || (assignment && (!assignment.active || assignment.event.canceled || assignment.event.startsAt <= now || ["CONFIRMED", "DECLINED", "CANCELED"].includes(assignment.confirmationStatus)))) {
       return tx.plannedAction.update({ where: { id: action.id }, data: { status: "SUPPRESSED", lastError: "Recipient or assignment is ineligible" } });
     }
     if (assignment && eventTitleDateMismatch(assignment.event.name, assignment.event.startsAt, assignment.event.timezone)) {

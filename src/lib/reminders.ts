@@ -41,7 +41,8 @@ export async function planAssignmentReminders(assignmentId: string, now = new Da
   });
   const eligible =
     assignment.active &&
-    !["CONFIRMED", "CANCELED"].includes(assignment.confirmationStatus) &&
+    assignment.person.active &&
+    !["CONFIRMED", "DECLINED", "CANCELED"].includes(assignment.confirmationStatus) &&
     !assignment.event.canceled &&
     !assignment.person.paused &&
     !assignment.paused &&
@@ -125,8 +126,8 @@ export async function planAssignmentReminders(assignmentId: string, now = new Da
       subjectPreview: subject,
       reason: nextPolicy.name,
       channel: nextPolicy.channel,
-      ...(existing?.status === "CANCELED"
-        ? { status: "PLANNED" as const, canceledAt: null, lastError: null }
+      ...(existing?.status === "CANCELED" || existing?.status === "SUPPRESSED"
+        ? { status: "PLANNED" as const, canceledAt: null, jobQueueId: null, lastError: null }
         : {}),
     },
     create: {

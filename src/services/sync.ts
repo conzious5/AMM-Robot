@@ -8,6 +8,7 @@ import { VscoWorkspaceProvider, type VscoWedgewoodContact } from "@/providers/vs
 import { notifyProjectManagers } from "@/services/project-manager";
 import { notifySystemDeveloper } from "@/services/developer-alerts";
 import { eventTitleDateMismatch, eventWasMissingFromSuccessfulVscoScan } from "@/lib/event-date-consistency";
+import { recoverBookedWeddingReminders } from "@/services/reminder-recovery";
 
 const assignmentRole = (role: string) => role.toLowerCase().includes("video") ? "VIDEOGRAPHER" as const : role.toLowerCase().includes("photo") ? "PHOTOGRAPHER" as const : "OTHER" as const;
 const removedPersonNames = new Set(["danielle tolson", "seth smith"]);
@@ -30,6 +31,7 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
         try {
           const dateMismatch = eventTitleDateMismatch(item.name, item.startsAt, item.timezone);
           const existing = await db.event.findUnique({ where: { vscoEventId: item.externalId }, include: { assignments: true } });
+          const restored = Boolean(existing?.canceled && !item.canceled);
           const event = await db.event.upsert({
             where: { vscoEventId: item.externalId },
             update: { vscoJobId: item.jobId, name: item.name, administrativeUrl: item.administrativeUrl, eventType: item.eventType, startsAt: item.startsAt, endsAt: item.endsAt, timezone: item.timezone, venueName: item.venueName, address: item.address, canceled: item.canceled, status: item.canceled ? "CANCELED" : "SCHEDULED", rawProviderPayload: item.raw as object, lastSyncedAt: new Date() },
@@ -37,6 +39,7 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
           });
           if (existing) stats.updated++;
           else stats.created++;
+          if (restored) await db.event.update({ where: { id: event.id }, data: { paused: false } });
           if (existing && existing.startsAt.getTime() !== item.startsAt.getTime()) {
             await db.eventChange.create({ data: { eventId: event.id, field: "startsAt", oldValue: existing.startsAt.toISOString(), newValue: item.startsAt.toISOString(), source: "VSCO" } });
             await db.plannedAction.updateMany({ where: { eventId: event.id, status: { in: ["PLANNED", "QUEUED"] } }, data: { status: "CANCELED", canceledAt: new Date() } });
@@ -93,11 +96,11 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
             const assignment = externalAssignment
               ? await db.assignment.update({
                   where: { id: externalAssignment.id },
-                  data: { eventId: event.id, personId: person.id, role, active: true, source: "VSCO" },
+                  data: { eventId: event.id, personId: person.id, role, active: true, source: "VSCO", ...(restored ? { paused: false, confirmationStatus: "PENDING" as const, confirmedAt: null, declinedAt: null } : {}) },
                 })
               : await db.assignment.upsert({
                   where: { eventId_personId_role: { eventId: event.id, personId: person.id, role } },
-                  update: { active: true, externalAssignmentId: source.id, source: "VSCO" },
+                  update: { active: true, externalAssignmentId: source.id, source: "VSCO", ...(restored ? { paused: false, confirmationStatus: "PENDING" as const, confirmedAt: null, declinedAt: null } : {}) },
                   create: { eventId: event.id, personId: person.id, role, source: "VSCO", externalAssignmentId: source.id, confirmationStatus: "PENDING" },
                 });
             seen.add(assignment.id);
@@ -166,6 +169,7 @@ export async function runVscoSync(provider = new VscoWorkspaceProvider()) {
     }
     if (stats.failed === 0) await archiveMissingVscoEvents(seenExternalIds, syncFrom, syncTo);
     await archiveExcludedAndDuplicateEvents();
+    if (stats.failed === 0) await recoverBookedWeddingReminders(seenExternalIds);
     await syncWedgewoodDirectory(await provider.wedgewoodDirectoryContacts());
     return await db.syncRun.update({ where: { id: run.id }, data: { completedAt: new Date(), status: stats.failed ? "PARTIAL" : "SUCCEEDED", itemsFetched: stats.fetched, itemsCreated: stats.created, itemsUpdated: stats.updated, itemsSkipped: stats.skipped, itemsFailed: stats.failed, details: stats } });
   } catch (error) {

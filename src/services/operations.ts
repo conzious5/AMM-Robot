@@ -363,6 +363,12 @@ export async function pauseCommunications(adminId: string, target: "event" | "as
       where: { [target === "event" ? "eventId" : target === "assignment" ? "assignmentId" : "personId"]: targetId, status: { in: ["PLANNED", "QUEUED"] } },
       data: { status: "SUPPRESSED", lastError: `Communications paused by ${admin.name}` },
     });
+  } else {
+    const assignments = await db.assignment.findMany({
+      where: { [target === "event" ? "eventId" : target === "assignment" ? "id" : "personId"]: targetId, active: true },
+      select: { id: true },
+    });
+    for (const assignment of assignments) await planAssignmentReminders(assignment.id);
   }
   await audit(adminId, paused ? "COMMUNICATIONS_PAUSED" : "COMMUNICATIONS_RESUMED", target, targetId, undefined, { paused }, idempotencyKey);
 }

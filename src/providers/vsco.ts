@@ -1,5 +1,14 @@
 import { z } from "zod";
+import { formatInTimeZone } from "date-fns-tz";
 import { env } from "@/lib/env";
+
+// A TBD ceremony can expose a moving UTC timestamp. The documented local
+// calendar date must also fall inside the requested sync window.
+export function vscoCalendarDateIsInWindow(startDate: string | null | undefined, timezone: string, from: Date, to: Date) {
+  if (!startDate) return true;
+  return startDate >= formatInTimeZone(from, timezone, "yyyy-MM-dd")
+    && startDate <= formatInTimeZone(to, timezone, "yyyy-MM-dd");
+}
 
 const Assignment = z.object({
   id: z.union([z.string(), z.number()]).transform(String).optional(),
@@ -112,6 +121,8 @@ export class VscoWorkspaceProvider {
         const event = OfficialEvent.parse(input);
         if (!event.name?.trim().toLowerCase().includes("ceremony")) continue;
         if (event.jobId && this.ceremonyJobs.has(event.jobId)) continue;
+        const timezone = event.timezoneName || event.location?.address?.timezone || cfg.DEFAULT_TIMEZONE;
+        if (!vscoCalendarDateIsInWindow(event.startDate, timezone, params.from, params.to)) continue;
         if (!event.startUtc) continue;
         const startsAt = new Date(event.startUtc);
         if (startsAt < params.from || startsAt > params.to) continue;
@@ -138,7 +149,7 @@ export class VscoWorkspaceProvider {
           eventType: "Wedding",
           startsAt,
           endsAt: event.endUtc ? new Date(event.endUtc) : undefined,
-          timezone: event.timezoneName || address?.timezone || cfg.DEFAULT_TIMEZONE,
+          timezone,
           venueName: address?.name ?? undefined,
           address: address ? [address.streetAddress, address.city, address.state, address.postalCode].filter(Boolean).join(", ") : undefined,
           canceled: event.hidden,
@@ -324,6 +335,7 @@ const OfficialEvent = z.object({
   hidden: z.boolean().default(false),
   jobId: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
+  startDate: z.string().date().nullable().optional(),
   startUtc: z.string().datetime({ offset: true }).nullable().optional(),
   endUtc: z.string().datetime({ offset: true }).nullable().optional(),
   timezoneName: z.string().nullable().optional(),

@@ -181,7 +181,11 @@ export async function getOperationOverview() {
       take: 25,
     }),
     db.operationalAlert.findMany({
-      where: { status: "OPEN", severity: { in: ["CRITICAL", "HIGH"] } },
+      where: {
+        status: "OPEN",
+        severity: { in: ["CRITICAL", "HIGH"] },
+        OR: [{ eventId: null }, { event: { canceled: false, startsAt: { gte: new Date() } } }],
+      },
       include: { event: true },
       orderBy: { firstSeenAt: "desc" },
       take: 25,

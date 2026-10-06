@@ -86,7 +86,9 @@ export async function calculateEventReadiness(eventId: string, now = new Date())
       },
       changeHistory: true,
       operationalTasks: true,
-      operationalAlerts: { where: { status: "OPEN", type: { not: "READINESS" } } },
+      // Readiness produces several alert types. None of its own outputs may
+      // become inputs, or a resolved blocker keeps itself alive forever.
+      operationalAlerts: { where: { status: "OPEN", NOT: { deduplicationKey: { startsWith: `readiness:${eventId}:` } } } },
     },
   });
   const activeAssignments = event.assignments.filter(assignment => assignment.active);
@@ -215,6 +217,16 @@ export async function reconcileEventReadiness(eventId: string, now = new Date())
 }
 
 export async function reconcileAllEventReadiness(now = new Date()) {
+  // Past and cancelled events no longer participate in the upcoming-event
+  // reconciliation, so retire their calculated alerts explicitly.
+  await db.operationalAlert.updateMany({
+    where: {
+      status: "OPEN",
+      deduplicationKey: { startsWith: "readiness:" },
+      event: { OR: [{ startsAt: { lt: now } }, { canceled: true }] },
+    },
+    data: { status: "RESOLVED", resolvedAt: now },
+  });
   const events = await db.event.findMany({ where: { startsAt: { gte: now }, canceled: false }, select: { id: true } });
   const results = [];
   for (const event of events) results.push(await reconcileEventReadiness(event.id, now));
